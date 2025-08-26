@@ -569,16 +569,30 @@ def display_prediction_results():
                 st.write(f"**Polygon {idx+1}:** {pred} ({conf:.1%} confidence)")
                 st.image(img, width=200)
     
-    # Download results
-    if st.button("💾 Download Results", use_container_width=True):
-        # Convert to GeoJSON
-        geojson_data = result_gdf.to_json()
-        st.download_button(
-            label="🗺️ Download GeoJSON",
-            data=geojson_data,
-            file_name="polygon_predictions.geojson",
-            mime="application/json"
-        )
+    # Download results with predictions
+    st.write("**💾 Download Results:**")
+    
+    # Create download data
+    download_gdf = result_gdf.copy()
+    
+    # Ensure all data is serializable for GeoJSON
+    for col in download_gdf.columns:
+        if col != 'geometry':
+            if download_gdf[col].dtype == 'object':
+                download_gdf[col] = download_gdf[col].astype(str)
+            elif 'float' in str(download_gdf[col].dtype):
+                download_gdf[col] = download_gdf[col].round(6)  # Round to 6 decimal places
+    
+    # Convert to GeoJSON
+    geojson_data = download_gdf.to_json()
+    
+    st.download_button(
+        label="🗺️ Download GeoJSON with Predictions",
+        data=geojson_data,
+        file_name="polygon_predictions.geojson",
+        mime="application/json",
+        help="Download polygons with classification results as GeoJSON"
+    )
 
 if __name__ == "__main__":
     main()
