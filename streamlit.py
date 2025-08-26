@@ -404,20 +404,28 @@ def process_drawn_features(map_data):
 # Main Application
 # ========================
 def main():
-    st.title("🗺️ Interactive Polygon Drawing & Classification")
+    st.title("🗺️ Automated Grid-based Geo Annotator")
     st.markdown("Draw polygons on the map to classify satellite imagery using deep learning")
 
     # Sidebar
     with st.sidebar:
-        st.header("🗺️ Interactive Polygon Drawing")
+        st.header("🗺️ AGGA-v2")
+        st.markdown("### 📋 Description")
+        st.markdown("""
+        5 Classification : 
+        - slum+slum-to-normal
+        - normal+normal-premium
+        - premium
+        - industri
+        - komersial
+        """)
+        st.markdown("---")
         st.markdown("### 📋 Instructions")
         st.markdown("""
-        1. **Switch to Satellite View** using layer control
-        2. **Draw polygons** on the map using drawing tools
-        3. **Click 'Predict'** to classify drawn areas
-        4. **View results** in the results section
+        1. **Draw polygons** on the map using drawing tools
+        2. **Click 'Predict'** to classify drawn areas
+        3. **View results** in the results section
         """)
-        
         st.markdown("---")
         st.markdown("### ⚙️ Settings")
         st.markdown("**Image Capture Settings:**")
