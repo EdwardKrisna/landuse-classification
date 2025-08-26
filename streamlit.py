@@ -405,55 +405,53 @@ def main():
             st.session_state.model_loaded = True
 
     # Main content
-    col1, col2 = st.columns([2, 1])
+    st.subheader("🗺️ Interactive Map")
     
-    with col1:
-        st.subheader("🗺️ Interactive Map")
+    # Fixed settings (same as training data)
+    center_lat, center_lon, zoom_start = -7.25, 112.75, 12
+    img_zoom, img_scale = 17, 2  # Fixed to match training
+    
+    # Create and display map
+    m = create_map(center_lat, center_lon, zoom_start)
+    map_data = st_folium(
+        m, 
+        width=None,  # Use full width
+        height=600,  # Increased height
+        returned_objects=["all_drawings"]
+    )
+    
+    # Process drawn polygons
+    if map_data['all_drawings']:
+        gdf = process_drawn_features(map_data)
         
-        # Fixed settings (same as training data)
-        center_lat, center_lon, zoom_start = -7.25, 112.75, 12
-        img_zoom, img_scale = 17, 2  # Fixed to match training
-        
-        # Create and display map
-        m = create_map(center_lat, center_lon, zoom_start)
-        map_data = st_folium(
-            m, 
-            width=700, 
-            height=500,
-            returned_objects=["all_drawings"]
-        )
-        
-        # Process drawn polygons
-        if map_data['all_drawings']:
-            gdf = process_drawn_features(map_data)
+        if gdf is not None and len(gdf) > 0:
+            st.success(f"✅ {len(gdf)} polygon(s) drawn")
             
-            if gdf is not None and len(gdf) > 0:
-                st.success(f"✅ {len(gdf)} polygon(s) drawn")
-                
-                # Show polygon info
-                with st.expander("📊 Polygon Details"):
-                    for idx, row in gdf.iterrows():
-                        st.write(f"**Polygon {idx+1}:**")
-                        st.write(f"- Area: {row.geometry.area:.8f}°²")
-                        st.write(f"- Perimeter: {row.geometry.length:.8f}°")
-                        bounds = row.geometry.bounds
-                        st.write(f"- Bounds: ({bounds[0]:.4f}, {bounds[1]:.4f}) to ({bounds[2]:.4f}, {bounds[3]:.4f})")
-                
-                # Prediction button
-                if st.button("🤖 Predict Classifications", type="primary", use_container_width=True):
-                    predict_polygons(gdf, img_zoom, img_scale)
-            else:
-                st.info("👆 Draw some polygons on the map to get started")
+            # Show polygon info
+            with st.expander("📊 Polygon Details"):
+                for idx, row in gdf.iterrows():
+                    st.write(f"**Polygon {idx+1}:**")
+                    st.write(f"- Area: {row.geometry.area:.8f}°²")
+                    st.write(f"- Perimeter: {row.geometry.length:.8f}°")
+                    bounds = row.geometry.bounds
+                    st.write(f"- Bounds: ({bounds[0]:.4f}, {bounds[1]:.4f}) to ({bounds[2]:.4f}, {bounds[3]:.4f})")
+            
+            # Prediction button
+            if st.button("🤖 Predict Classifications", type="primary", use_container_width=True):
+                predict_polygons(gdf, img_zoom, img_scale)
         else:
             st.info("👆 Draw some polygons on the map to get started")
+    else:
+        st.info("👆 Draw some polygons on the map to get started")
 
-    with col2:
-        st.subheader("📊 Results")
-        
-        if 'predictions' in st.session_state and st.session_state.predictions is not None and len(st.session_state.predictions) > 0:
-            display_prediction_results()
-        else:
-            st.info("Draw polygons and click 'Predict' to see results here")
+    # Results section - moved below map
+    st.markdown("---")  # Add separator
+    st.subheader("📊 Results")
+    
+    if 'predictions' in st.session_state and st.session_state.predictions is not None and len(st.session_state.predictions) > 0:
+        display_prediction_results()
+    else:
+        st.info("Draw polygons and click 'Predict' to see results here")
 
 def predict_polygons(gdf, zoom, scale):
     """Predict classifications for drawn polygons using ONNX"""
