@@ -450,7 +450,7 @@ def main():
     with col2:
         st.subheader("📊 Results")
         
-        if 'predictions' in st.session_state and st.session_state.predictions:
+        if 'predictions' in st.session_state and st.session_state.predictions is not None and len(st.session_state.predictions) > 0:
             display_prediction_results()
         else:
             st.info("Draw polygons and click 'Predict' to see results here")
