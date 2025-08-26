@@ -69,49 +69,78 @@ class ImageClassifier(nn.Module):
 # ========================
 @st.cache_resource(show_spinner=True)
 def download_and_load_model():
-    """Download model from Google Drive and load it"""
+    """Download ONNX model from Google Drive and load it"""
     try:
         # Get credentials from Streamlit secrets
         file_id = st.secrets["MODEL_FILE_ID"]
-        model_name = st.secrets.get("MODEL_NAME", "model.pth")
+        model_name = st.secrets.get("MODEL_NAME", "agga-v2.onnx")
         
         # Create temporary directory
         temp_dir = tempfile.mkdtemp()
         model_path = os.path.join(temp_dir, model_name)
+        info_path = model_path.replace('.onnx', '_info.json')
         
         # Download model
         url = f"https://drive.google.com/uc?id={file_id}"
-        st.info(f"📥 Downloading model from Google Drive...")
+        st.info(f"📥 Downloading ONNX model from Google Drive...")
         gdown.download(url, model_path, quiet=False)
         
-        # Load model
-        st.info("🔧 Loading model...")
-        device = torch.device('cpu')  # Use CPU for Streamlit deployment
-        checkpoint = torch.load(model_path, map_location=device)
+        # Try to download model info file (if exists)
+        try:
+            info_file_id = st.secrets.get("MODEL_INFO_FILE_ID")
+            if info_file_id:
+                info_url = f"https://drive.google.com/uc?id={info_file_id}"
+                gdown.download(info_url, info_path, quiet=True)
+        except:
+            pass
         
-        # Get model configuration
-        config = checkpoint['config']
-        class_to_idx = checkpoint['class_to_idx']
-        idx_to_class = checkpoint['idx_to_class']
+        # Load ONNX model
+        st.info("🔧 Loading ONNX model...")
+        import onnxruntime as ort
         
-        # Create model
-        model = ImageClassifier(
-            architecture=config['architecture'],
-            num_classes=config['num_classes'],
-            pretrained=False
-        )
+        # Create ONNX Runtime session
+        ort_session = ort.InferenceSession(model_path)
         
-        # Load trained weights
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model.eval()
+        # Load model info if available
+        config = {}
+        class_to_idx = {}
+        idx_to_class = {}
         
-        st.success(f"✅ Model loaded successfully!")
-        st.info(f"Architecture: {config['architecture']} | Classes: {len(class_to_idx)}")
+        if os.path.exists(info_path):
+            with open(info_path, 'r') as f:
+                model_info = json.load(f)
+                config = {
+                    'architecture': model_info.get('architecture', 'unknown'),
+                    'num_classes': model_info.get('num_classes', 0),
+                    'image_size': model_info.get('image_size', 640)
+                }
+                class_to_idx = model_info.get('class_to_idx', {})
+                idx_to_class = {int(k): v for k, v in model_info.get('idx_to_class', {}).items()}
+        else:
+            # Default config if no info file
+            st.warning("⚠️ Model info file not found. Using default configuration.")
+            config = {
+                'architecture': 'onnx_model',
+                'num_classes': 0,  # Will be inferred from output shape
+                'image_size': 640
+            }
+            
+            # Try to infer from ONNX model output
+            output_shape = ort_session.get_outputs()[0].shape
+            if len(output_shape) >= 2:
+                num_classes = output_shape[-1] if output_shape[-1] != -1 else output_shape[1]
+                config['num_classes'] = num_classes
+                # Create default class mappings
+                class_to_idx = {f'class_{i}': i for i in range(num_classes)}
+                idx_to_class = {i: f'class_{i}' for i in range(num_classes)}
         
-        return model, config, class_to_idx, idx_to_class
+        st.success(f"✅ ONNX model loaded successfully!")
+        st.info(f"Architecture: {config['architecture']} | Classes: {len(class_to_idx)} | Input size: {config['image_size']}")
+        
+        return ort_session, config, class_to_idx, idx_to_class
         
     except Exception as e:
-        st.error(f"❌ Failed to load model: {str(e)}")
+        st.error(f"❌ Failed to load ONNX model: {str(e)}")
         st.stop()
 
 @st.cache_data
@@ -220,22 +249,31 @@ def polygon_to_image(poly, zoom: int, scale: int = 2):
 # ========================
 # Prediction Functions
 # ========================
-def predict_single_image(model, image, transform, idx_to_class):
-    """Predict single image"""
+def predict_single_image(ort_session, image, transform, idx_to_class):
+    """Predict single image using ONNX Runtime"""
     if isinstance(image, Image.Image):
         image = np.array(image)
 
+    # Apply transforms
     transformed = transform(image=image)
-    input_tensor = transformed['image'].unsqueeze(0)
+    input_tensor = transformed['image'].unsqueeze(0).numpy()  # Convert to numpy for ONNX
 
-    with torch.no_grad():
-        outputs = model(input_tensor)
-        probabilities = torch.softmax(outputs, dim=1)
-        predicted_class_idx = torch.argmax(probabilities, dim=1).item()
-        confidence = probabilities[0][predicted_class_idx].item()
+    # Run ONNX inference
+    input_name = ort_session.get_inputs()[0].name
+    outputs = ort_session.run(None, {input_name: input_tensor})
+    
+    # Process outputs
+    logits = outputs[0][0]  # Get first batch item
+    
+    # Apply softmax
+    exp_logits = np.exp(logits - np.max(logits))  # For numerical stability
+    probabilities = exp_logits / np.sum(exp_logits)
+    
+    predicted_class_idx = np.argmax(probabilities)
+    confidence = probabilities[predicted_class_idx]
 
-    predicted_class = idx_to_class[predicted_class_idx]
-    return predicted_class, confidence, probabilities[0].cpu().numpy()
+    predicted_class = idx_to_class.get(predicted_class_idx, f'class_{predicted_class_idx}')
+    return predicted_class, float(confidence), probabilities
 
 # ========================
 # UI Functions
@@ -320,11 +358,11 @@ def main():
 
     # Load model
     if 'model_loaded' not in st.session_state:
-        with st.spinner("Loading AI model..."):
-            model, config, class_to_idx, idx_to_class = download_and_load_model()
+        with st.spinner("Loading ONNX model..."):
+            ort_session, config, class_to_idx, idx_to_class = download_and_load_model()
             transform = get_prediction_transforms(config['image_size'])
             
-            st.session_state.model = model
+            st.session_state.ort_session = ort_session
             st.session_state.config = config
             st.session_state.class_to_idx = class_to_idx
             st.session_state.idx_to_class = idx_to_class
@@ -380,10 +418,10 @@ def main():
             st.info("Draw polygons and click 'Predict' to see results here")
 
 def predict_polygons(gdf, zoom, scale):
-    """Predict classifications for drawn polygons"""
+    """Predict classifications for drawn polygons using ONNX"""
     
     # Get model components from session state
-    model = st.session_state.model
+    ort_session = st.session_state.ort_session
     transform = st.session_state.transform
     idx_to_class = st.session_state.idx_to_class
     
@@ -407,9 +445,9 @@ def predict_polygons(gdf, zoom, scale):
             img = polygon_to_image(row.geometry, zoom, scale)
             
             if img is not None:
-                # Make prediction
+                # Make prediction using ONNX
                 pred_class, confidence, probs = predict_single_image(
-                    model, img, transform, idx_to_class
+                    ort_session, img, transform, idx_to_class
                 )
                 
                 predictions.append(pred_class)
@@ -443,7 +481,7 @@ def predict_polygons(gdf, zoom, scale):
     
     # Add probability columns
     for class_idx, class_name in idx_to_class.items():
-        result_gdf[f'prob_{class_name}'] = [float(p[class_idx]) for p in all_probs]
+        result_gdf[f'prob_{class_name}'] = [float(p[class_idx]) if len(p) > class_idx else 0.0 for p in all_probs]
     
     st.session_state.predictions = result_gdf
     st.session_state.captured_images = captured_images
