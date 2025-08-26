@@ -77,78 +77,99 @@ def download_and_load_model():
         model_filename = "agga-v2.onnx"
         info_filename = "agga-v2_info.json"
         
-        st.info(f"📥 Downloading ONNX model from Hugging Face Hub...")
-        st.info(f"Repository: {repo_id}")
-        
-        # Download model using huggingface_hub
-        model_path = hf_hub_download(
-            repo_id=repo_id,
-            filename=model_filename,
-            cache_dir=None  # Use default cache directory
-        )
-        st.success("✅ Model downloaded successfully!")
-        
-        # Try to download model info file
-        info_path = None
-        try:
-            st.info("📄 Downloading model metadata...")
-            info_path = hf_hub_download(
-                repo_id=repo_id,
-                filename=info_filename,
-                cache_dir=None
-            )
-            st.success("✅ Model metadata downloaded!")
-        except Exception as e:
-            st.warning("⚠️ Model metadata not found, using defaults")
-            info_path = None
-        
-        # Load ONNX model
-        st.info("🔧 Loading ONNX model...")
-        import onnxruntime as ort
-        
-        # Create ONNX Runtime session
-        ort_session = ort.InferenceSession(model_path)
-        
-        # Load model info if available
-        config = {}
-        class_to_idx = {}
-        idx_to_class = {}
-        
-        if info_path and os.path.exists(info_path):
-            with open(info_path, 'r') as f:
-                model_info = json.load(f)
-                config = {
-                    'architecture': model_info.get('architecture', 'resnet50'),
-                    'num_classes': model_info.get('num_classes', 5),
-                    'image_size': model_info.get('image_size', 640)
-                }
-                class_to_idx = model_info.get('class_to_idx', {})
-                idx_to_class = {int(k): v for k, v in model_info.get('idx_to_class', {}).items()}
-        else:
-            # Default config for your ResNet50 land use classification model
-            st.info("🔧 Using default configuration for ResNet50 land use model...")
-            config = {
-                'architecture': 'resnet50',
-                'num_classes': 5,  # Assuming 5 land use classes
-                'image_size': 640
-            }
-            
-            # Try to infer from ONNX model output
-            output_shape = ort_session.get_outputs()[0].shape
-            if len(output_shape) >= 2:
-                num_classes = output_shape[-1] if output_shape[-1] != -1 else output_shape[1]
-                config['num_classes'] = num_classes
+        # Create info container
+        info_container = st.container()
+        with info_container:
+            with st.expander("🤖 Model Loading Details", expanded=True):
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                details_text = st.empty()
                 
-            # Create default class mappings for land use classification
-            default_classes = ['urban', 'agriculture', 'forest', 'water', 'other'][:config['num_classes']]
-            class_to_idx = {cls: i for i, cls in enumerate(default_classes)}
-            idx_to_class = {i: cls for i, cls in enumerate(default_classes)}
-        
-        st.success(f"✅ ONNX model loaded successfully!")
-        st.info(f"🏗️ Architecture: {config['architecture']}")
-        st.info(f"📊 Classes: {len(class_to_idx)} → {list(class_to_idx.keys())}")
-        st.info(f"🖼️ Input size: {config['image_size']}×{config['image_size']}")
-        st.info(f"💾 Model cached at: {model_path}")
+                # Step 1: Download model
+                status_text.info("📥 Downloading ONNX model from Hugging Face Hub...")
+                details_text.text(f"Repository: {repo_id}")
+                progress_bar.progress(10)
+                
+                model_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=model_filename,
+                    cache_dir=None
+                )
+                progress_bar.progress(40)
+                status_text.success("✅ Model downloaded successfully!")
+                
+                # Step 2: Download metadata
+                info_path = None
+                try:
+                    status_text.info("📄 Downloading model metadata...")
+                    progress_bar.progress(50)
+                    info_path = hf_hub_download(
+                        repo_id=repo_id,
+                        filename=info_filename,
+                        cache_dir=None
+                    )
+                    progress_bar.progress(60)
+                    status_text.success("✅ Model metadata downloaded!")
+                except Exception as e:
+                    status_text.warning("⚠️ Model metadata not found, using defaults")
+                    info_path = None
+                
+                # Step 3: Load ONNX model
+                status_text.info("🔧 Loading ONNX model...")
+                progress_bar.progress(70)
+                
+                import onnxruntime as ort
+                ort_session = ort.InferenceSession(model_path)
+                progress_bar.progress(80)
+                
+                # Step 4: Load configuration
+                config = {}
+                class_to_idx = {}
+                idx_to_class = {}
+                
+                if info_path and os.path.exists(info_path):
+                    with open(info_path, 'r') as f:
+                        model_info = json.load(f)
+                        config = {
+                            'architecture': model_info.get('architecture', 'resnet50'),
+                            'num_classes': model_info.get('num_classes', 5),
+                            'image_size': model_info.get('image_size', 640)
+                        }
+                        class_to_idx = model_info.get('class_to_idx', {})
+                        idx_to_class = {int(k): v for k, v in model_info.get('idx_to_class', {}).items()}
+                else:
+                    # Default config for your ResNet50 land use classification model
+                    config = {
+                        'architecture': 'resnet50',
+                        'num_classes': 5,
+                        'image_size': 640
+                    }
+                    
+                    # Try to infer from ONNX model output
+                    output_shape = ort_session.get_outputs()[0].shape
+                    if len(output_shape) >= 2:
+                        num_classes = output_shape[-1] if output_shape[-1] != -1 else output_shape[1]
+                        config['num_classes'] = num_classes
+                        
+                    # Create default class mappings for land use classification
+                    default_classes = ['urban', 'agriculture', 'forest', 'water', 'other'][:config['num_classes']]
+                    class_to_idx = {cls: i for i, cls in enumerate(default_classes)}
+                    idx_to_class = {i: cls for i, cls in enumerate(default_classes)}
+                
+                progress_bar.progress(90)
+                
+                # Final status
+                progress_bar.progress(100)
+                status_text.success("🎉 Model loaded successfully!")
+                
+                # Show final details
+                details_text.markdown(f"""
+                **📊 Model Details:**
+                - 🏗️ Architecture: {config['architecture']}
+                - 📊 Classes: {len(class_to_idx)} → {list(class_to_idx.keys())}
+                - 🖼️ Input size: {config['image_size']}×{config['image_size']}
+                - 💾 Cached at: `{model_path}`
+                """)
         
         return ort_session, config, class_to_idx, idx_to_class
         
