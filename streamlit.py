@@ -69,30 +69,39 @@ class ImageClassifier(nn.Module):
 # ========================
 @st.cache_resource(show_spinner=True)
 def download_and_load_model():
-    """Download ONNX model from Google Drive and load it"""
+    """Download ONNX model from Hugging Face Hub and load it"""
     try:
-        # Get credentials from Streamlit secrets
-        file_id = st.secrets["MODEL_FILE_ID"]
-        model_name = st.secrets.get("MODEL_NAME", "agga-v2.onnx")
+        from huggingface_hub import hf_hub_download
         
-        # Create temporary directory
-        temp_dir = tempfile.mkdtemp()
-        model_path = os.path.join(temp_dir, model_name)
-        info_path = model_path.replace('.onnx', '_info.json')
+        # Hugging Face repository details
+        repo_id = "woov/resnet50_landuse_5_classification"
+        model_filename = "agga-v2.onnx"
+        info_filename = "agga-v2_info.json"
         
-        # Download model
-        url = f"https://drive.google.com/uc?id={file_id}"
-        st.info(f"📥 Downloading ONNX model from Google Drive...")
-        gdown.download(url, model_path, quiet=False)
+        st.info(f"📥 Downloading ONNX model from Hugging Face Hub...")
+        st.info(f"Repository: {repo_id}")
         
-        # Try to download model info file (if exists)
+        # Download model using huggingface_hub
+        model_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=model_filename,
+            cache_dir=None  # Use default cache directory
+        )
+        st.success("✅ Model downloaded successfully!")
+        
+        # Try to download model info file
+        info_path = None
         try:
-            info_file_id = st.secrets.get("MODEL_INFO_FILE_ID")
-            if info_file_id:
-                info_url = f"https://drive.google.com/uc?id={info_file_id}"
-                gdown.download(info_url, info_path, quiet=True)
-        except:
-            pass
+            st.info("📄 Downloading model metadata...")
+            info_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=info_filename,
+                cache_dir=None
+            )
+            st.success("✅ Model metadata downloaded!")
+        except Exception as e:
+            st.warning("⚠️ Model metadata not found, using defaults")
+            info_path = None
         
         # Load ONNX model
         st.info("🔧 Loading ONNX model...")
@@ -106,22 +115,22 @@ def download_and_load_model():
         class_to_idx = {}
         idx_to_class = {}
         
-        if os.path.exists(info_path):
+        if info_path and os.path.exists(info_path):
             with open(info_path, 'r') as f:
                 model_info = json.load(f)
                 config = {
-                    'architecture': model_info.get('architecture', 'unknown'),
-                    'num_classes': model_info.get('num_classes', 0),
+                    'architecture': model_info.get('architecture', 'resnet50'),
+                    'num_classes': model_info.get('num_classes', 5),
                     'image_size': model_info.get('image_size', 640)
                 }
                 class_to_idx = model_info.get('class_to_idx', {})
                 idx_to_class = {int(k): v for k, v in model_info.get('idx_to_class', {}).items()}
         else:
-            # Default config if no info file
-            st.warning("⚠️ Model info file not found. Using default configuration.")
+            # Default config for your ResNet50 land use classification model
+            st.info("🔧 Using default configuration for ResNet50 land use model...")
             config = {
-                'architecture': 'onnx_model',
-                'num_classes': 0,  # Will be inferred from output shape
+                'architecture': 'resnet50',
+                'num_classes': 5,  # Assuming 5 land use classes
                 'image_size': 640
             }
             
@@ -130,17 +139,23 @@ def download_and_load_model():
             if len(output_shape) >= 2:
                 num_classes = output_shape[-1] if output_shape[-1] != -1 else output_shape[1]
                 config['num_classes'] = num_classes
-                # Create default class mappings
-                class_to_idx = {f'class_{i}': i for i in range(num_classes)}
-                idx_to_class = {i: f'class_{i}' for i in range(num_classes)}
+                
+            # Create default class mappings for land use classification
+            default_classes = ['urban', 'agriculture', 'forest', 'water', 'other'][:config['num_classes']]
+            class_to_idx = {cls: i for i, cls in enumerate(default_classes)}
+            idx_to_class = {i: cls for i, cls in enumerate(default_classes)}
         
         st.success(f"✅ ONNX model loaded successfully!")
-        st.info(f"Architecture: {config['architecture']} | Classes: {len(class_to_idx)} | Input size: {config['image_size']}")
+        st.info(f"🏗️ Architecture: {config['architecture']}")
+        st.info(f"📊 Classes: {len(class_to_idx)} → {list(class_to_idx.keys())}")
+        st.info(f"🖼️ Input size: {config['image_size']}×{config['image_size']}")
+        st.info(f"💾 Model cached at: {model_path}")
         
         return ort_session, config, class_to_idx, idx_to_class
         
     except Exception as e:
-        st.error(f"❌ Failed to load ONNX model: {str(e)}")
+        st.error(f"❌ Failed to load ONNX model from Hugging Face: {str(e)}")
+        st.error("Please check your internet connection or model repository")
         st.stop()
 
 @st.cache_data
