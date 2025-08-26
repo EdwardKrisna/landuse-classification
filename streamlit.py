@@ -291,6 +291,46 @@ def create_map(center_lat=-7.25, center_lon=112.75, zoom_start=12):
         control=True
     ).add_to(m)
     
+    # Add drawing functionality using plugins
+    from folium.plugins import Draw
+    draw = Draw(
+        export=True,
+        filename='polygons.geojson',
+        position='topleft',
+        draw_options={
+            'polygon': {
+                'allowIntersection': False,
+                'showArea': True,
+                'drawError': {
+                    'color': '#e1e100',
+                    'message': 'Polygon intersects with existing one!'
+                },
+                'shapeOptions': {
+                    'color': '#ff0000',
+                    'weight': 3,
+                    'fillOpacity': 0.3
+                }
+            },
+            'rectangle': {
+                'shapeOptions': {
+                    'color': '#0000ff',
+                    'weight': 3,
+                    'fillOpacity': 0.3
+                }
+            },
+            'circle': False,
+            'circlemarker': False,
+            'marker': False,
+            'polyline': False
+        },
+        edit_options={
+            'poly': {
+                'allowIntersection': False
+            }
+        }
+    )
+    draw.add_to(m)
+    
     folium.LayerControl().add_to(m)
     return m
 
@@ -334,20 +374,7 @@ def main():
 
     # Sidebar
     with st.sidebar:
-        st.header("⚙️ Configuration")
-        
-        # Map settings
-        st.subheader("🗺️ Map Settings")
-        center_lat = st.number_input("Center Latitude", value=-7.25, format="%.4f")
-        center_lon = st.number_input("Center Longitude", value=112.75, format="%.4f")
-        zoom_start = st.slider("Initial Zoom", 8, 18, 12)
-        
-        # Prediction settings
-        st.subheader("🤖 Prediction Settings")
-        img_zoom = st.slider("Image Zoom Level", 15, 20, 17)
-        img_scale = st.selectbox("Image Scale", [1, 2, 4], index=1)
-        
-        st.markdown("---")
+        st.header("🗺️ Interactive Polygon Drawing")
         st.markdown("### 📋 Instructions")
         st.markdown("""
         1. **Switch to Satellite View** using layer control
@@ -355,6 +382,14 @@ def main():
         3. **Click 'Predict'** to classify drawn areas
         4. **View results** in the results section
         """)
+        
+        st.markdown("---")
+        st.markdown("### ⚙️ Settings")
+        st.markdown("**Image Capture Settings:**")
+        st.markdown("- Zoom Level: 17 (fixed)")
+        st.markdown("- Scale: 2x (fixed)")
+        st.markdown("- Image Size: 640×640 (fixed)")
+        st.markdown("*Settings are fixed to match training data*")
 
     # Load model
     if 'model_loaded' not in st.session_state:
@@ -375,13 +410,16 @@ def main():
     with col1:
         st.subheader("🗺️ Interactive Map")
         
+        # Fixed settings (same as training data)
+        center_lat, center_lon, zoom_start = -7.25, 112.75, 12
+        img_zoom, img_scale = 17, 2  # Fixed to match training
+        
         # Create and display map
         m = create_map(center_lat, center_lon, zoom_start)
         map_data = st_folium(
             m, 
             width=700, 
             height=500,
-            feature_group_to_add=None,
             returned_objects=["all_drawings"]
         )
         
