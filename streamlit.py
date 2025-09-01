@@ -39,6 +39,38 @@ st.set_page_config(
 )
 
 # ========================
+# Model Configurations
+# ========================
+MODEL_CONFIGS = {
+    "agga-v2": {
+        "repo_id": "woov/resnet50_landuse_5_classification",
+        "model_filename": "agga-v2.onnx",
+        "info_filename": "agga-v2_info.json",
+        "display_name": "AGGA-v2 (5 Classes)",
+        "description": "5 Classification: slum+slum-to-normal, normal+normal-premium, premium, industri, komersial",
+        "num_classes": 5,
+        "default_classes": ['slum+slum-to-normal', 'normal+normal-premium', 'premium', 'industri', 'komersial']
+    },
+    "agga-v4": {
+        "repo_id": "woov/resnet50_landuse_5_classification",
+        "model_filename": "agga-v4.onnx",
+        "info_filename": "agga-v4_info.json",
+        "display_name": "AGGA-v4 (6 Classes)",
+        "description": "6 Classification with detailed explanations",
+        "num_classes": 6,
+        "default_classes": ['green', 'slum+slum-to-normal', 'normal+normal-premium', 'premium', 'industri', 'komersial'],
+        "class_labels": {
+            1: "green",
+            2: "slum+slum-to-normal", 
+            3: "normal+normal-premium",
+            4: "premium",
+            5: "industri",
+            6: "komersial"
+        }
+    }
+}
+
+# ========================
 # Model Architecture (same as your training)
 # ========================
 class ImageClassifier(nn.Module):
@@ -67,26 +99,27 @@ class ImageClassifier(nn.Module):
 # Model Loading Functions
 # ========================
 @st.cache_resource(show_spinner=True)
-def download_and_load_model():
+def download_and_load_model(model_key):
     """Download ONNX model from Hugging Face Hub and load it"""
     try:
         from huggingface_hub import hf_hub_download
         
-        # Hugging Face repository details
-        repo_id = "woov/resnet50_landuse_5_classification"
-        model_filename = "agga-v2.onnx"
-        info_filename = "agga-v2_info.json"
+        # Get model configuration
+        model_config = MODEL_CONFIGS[model_key]
+        repo_id = model_config["repo_id"]
+        model_filename = model_config["model_filename"]
+        info_filename = model_config["info_filename"]
         
         # Create info container
         info_container = st.container()
         with info_container:
-            with st.expander("🤖 Model Loading Details", expanded=True):
+            with st.expander(f"🤖 Loading {model_config['display_name']}", expanded=True):
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 details_text = st.empty()
                 
                 # Step 1: Download model
-                status_text.info("📥 Downloading ONNX model from Hugging Face Hub...")
+                status_text.info(f"📥 Downloading {model_config['display_name']} from Hugging Face Hub...")
                 details_text.text(f"Repository: {repo_id}")
                 progress_bar.progress(10)
                 
@@ -132,16 +165,16 @@ def download_and_load_model():
                         model_info = json.load(f)
                         config = {
                             'architecture': model_info.get('architecture', 'resnet50'),
-                            'num_classes': model_info.get('num_classes', 5),
+                            'num_classes': model_info.get('num_classes', model_config['num_classes']),
                             'image_size': model_info.get('image_size', 640)
                         }
                         class_to_idx = model_info.get('class_to_idx', {})
                         idx_to_class = {int(k): v for k, v in model_info.get('idx_to_class', {}).items()}
                 else:
-                    # Default config for your ResNet50 land use classification model
+                    # Default config
                     config = {
                         'architecture': 'resnet50',
-                        'num_classes': 5,
+                        'num_classes': model_config['num_classes'],
                         'image_size': 640
                     }
                     
@@ -151,10 +184,18 @@ def download_and_load_model():
                         num_classes = output_shape[-1] if output_shape[-1] != -1 else output_shape[1]
                         config['num_classes'] = num_classes
                         
-                    # Create default class mappings for land use classification
-                    default_classes = ['urban', 'agriculture', 'forest', 'water', 'other'][:config['num_classes']]
-                    class_to_idx = {cls: i for i, cls in enumerate(default_classes)}
-                    idx_to_class = {i: cls for i, cls in enumerate(default_classes)}
+                    # Create default class mappings
+                    default_classes = model_config['default_classes'][:config['num_classes']]
+                    
+                    # For AGGA-v4, handle the 1-6 indexing
+                    if model_key == "agga-v4":
+                        # Map 0-based indices to 1-6 classes with explanations
+                        class_explanations = model_config['class_explanations']
+                        class_to_idx = {class_explanations[i+1]: i for i in range(len(default_classes))}
+                        idx_to_class = {i: class_explanations[i+1] for i in range(len(default_classes))}
+                    else:
+                        class_to_idx = {cls: i for i, cls in enumerate(default_classes)}
+                        idx_to_class = {i: cls for i, cls in enumerate(default_classes)}
                 
                 progress_bar.progress(90)
                 
@@ -166,12 +207,24 @@ def download_and_load_model():
                 details_text.markdown(f"""
                 **📊 Model Details:**
                 - 🏗️ Architecture: {config['architecture']}
-                - 📊 Classes: {len(class_to_idx)} → {list(class_to_idx.keys())}
+                - 📊 Classes: {len(class_to_idx)}
                 - 🖼️ Input size: {config['image_size']}×{config['image_size']}
                 - 💾 Cached at: `{model_path}`
                 """)
+                
+                # Show class details for both models
+                if model_key == "agga-v4":
+                    st.markdown("**🏷️ Class Details:**")
+                    class_labels = model_config['class_labels']
+                    for class_idx, label in class_labels.items():
+                        st.markdown(f"- **{class_idx}**: {label}")
+                else:
+                    st.markdown("**🏷️ Classes:**")
+                    classes = list(class_to_idx.keys())
+                    for i, cls in enumerate(classes):
+                        st.markdown(f"- **{i}**: {cls}")
         
-        return ort_session, config, class_to_idx, idx_to_class
+        return ort_session, config, class_to_idx, idx_to_class, model_key
         
     except Exception as e:
         st.error(f"❌ Failed to load ONNX model from Hugging Face: {str(e)}")
@@ -409,22 +462,42 @@ def main():
 
     # Sidebar
     with st.sidebar:
-        st.header("🗺️ AGGA-v2")
-        st.markdown("### 📋 Description")
-        st.markdown("""
-        5 Classification : 
-        - slum+slum-to-normal
-        - normal+normal-premium
-        - premium
-        - industri
-        - komersial
-        """)
+        st.header("🗺️ AGGA Models")
+        
+        # Model Selection
+        st.markdown("### 🤖 Model Selection")
+        selected_model = st.selectbox(
+            "Choose Classification Model:",
+            options=list(MODEL_CONFIGS.keys()),
+            format_func=lambda x: MODEL_CONFIGS[x]["display_name"],
+            index=0,  # Default to agga-v2
+            help="Select which model to use for classification"
+        )
+        
+        # Display selected model info
+        model_config = MODEL_CONFIGS[selected_model]
+        st.markdown(f"**Selected:** {model_config['display_name']}")
+        st.markdown(f"**Description:** {model_config['description']}")
+        
+        # Show class details
+        if selected_model == "agga-v4":
+            with st.expander("📋 Class Details"):
+                class_labels = model_config['class_labels']
+                for class_idx, label in class_labels.items():
+                    st.markdown(f"**{class_idx}**: {label}")
+        elif selected_model == "agga-v2":
+            with st.expander("📋 Class Details"):
+                classes = model_config['default_classes']
+                for i, cls in enumerate(classes):
+                    st.markdown(f"**{i+1}**: {cls}")
+        
         st.markdown("---")
         st.markdown("### 📋 Instructions")
         st.markdown("""
-        1. **Draw polygons** on the map using drawing tools
-        2. **Click 'Predict'** to classify drawn areas
-        3. **View results** in the results section
+        1. **Select model** above (AGGA-v2 or AGGA-v4)
+        2. **Draw polygons** on the map using drawing tools
+        3. **Click 'Predict'** to classify drawn areas
+        4. **View results** in the results section
         """)
         st.markdown("---")
         st.markdown("### ⚙️ Settings")
@@ -434,10 +507,13 @@ def main():
         st.markdown("- Image Size: 640×640 (fixed)")
         st.markdown("*Settings are fixed to match training data*")
 
-    # Load model
-    if 'model_loaded' not in st.session_state:
-        with st.spinner("Loading ONNX model..."):
-            ort_session, config, class_to_idx, idx_to_class = download_and_load_model()
+    # Load model (check if model changed or not loaded yet)
+    if ('model_loaded' not in st.session_state or 
+        'current_model' not in st.session_state or 
+        st.session_state.current_model != selected_model):
+        
+        with st.spinner(f"Loading {MODEL_CONFIGS[selected_model]['display_name']}..."):
+            ort_session, config, class_to_idx, idx_to_class, model_key = download_and_load_model(selected_model)
             transform = get_prediction_transforms(config['image_size'])
             
             st.session_state.ort_session = ort_session
@@ -446,6 +522,13 @@ def main():
             st.session_state.idx_to_class = idx_to_class
             st.session_state.transform = transform
             st.session_state.model_loaded = True
+            st.session_state.current_model = selected_model
+            
+            # Clear previous predictions when model changes
+            if 'predictions' in st.session_state:
+                del st.session_state.predictions
+            if 'captured_images' in st.session_state:
+                del st.session_state.captured_images
 
     # Main content
     st.subheader("🗺️ Interactive Map")
@@ -460,7 +543,8 @@ def main():
         m, 
         width=None,  # Use full width
         height=600,  # Increased height
-        returned_objects=["all_drawings"]
+        returned_objects=["all_drawings"],
+        key="map_widget"  # Add key to prevent reloading issues
     )
     
     # Process drawn polygons
@@ -480,7 +564,8 @@ def main():
                     st.write(f"- Bounds: ({bounds[0]:.4f}, {bounds[1]:.4f}) to ({bounds[2]:.4f}, {bounds[3]:.4f})")
             
             # Prediction button
-            if st.button("🤖 Predict Classifications", type="primary", use_container_width=True):
+            current_model_name = MODEL_CONFIGS[selected_model]["display_name"]
+            if st.button(f"🤖 Predict Classifications using {current_model_name}", type="primary", use_container_width=True):
                 predict_polygons(gdf, img_zoom, img_scale)
         else:
             st.info("👆 Draw some polygons on the map to get started")
@@ -503,6 +588,7 @@ def predict_polygons(gdf, zoom, scale):
     ort_session = st.session_state.ort_session
     transform = st.session_state.transform
     idx_to_class = st.session_state.idx_to_class
+    current_model = st.session_state.current_model
     
     st.subheader("🔄 Processing Polygons")
     
@@ -557,10 +643,16 @@ def predict_polygons(gdf, zoom, scale):
     result_gdf = gdf.copy()
     result_gdf['prediction'] = predictions
     result_gdf['confidence'] = confidences
+    result_gdf['model_used'] = current_model
     
     # Add probability columns
     for class_idx, class_name in idx_to_class.items():
-        result_gdf[f'prob_{class_name}'] = [float(p[class_idx]) if len(p) > class_idx else 0.0 for p in all_probs]
+        # For AGGA-v4, extract just the label part for column names (e.g., "green" from "1: green")
+        if current_model == "agga-v4":
+            clean_class_name = class_name.split(': ')[1] if ': ' in class_name else class_name
+        else:
+            clean_class_name = class_name.split(' - ')[0] if ' - ' in class_name else class_name
+        result_gdf[f'prob_{clean_class_name}'] = [float(p[class_idx]) if len(p) > class_idx else 0.0 for p in all_probs]
     
     st.session_state.predictions = result_gdf
     st.session_state.captured_images = captured_images
@@ -570,13 +662,16 @@ def predict_polygons(gdf, zoom, scale):
     successful_preds = sum(1 for p in predictions if p != "unknown")
     failed_preds = len(predictions) - successful_preds
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total Polygons", len(predictions))
     with col2:
         st.metric("Successful", successful_preds)
     with col3:
         st.metric("Failed", failed_preds)
+    with col4:
+        model_name = MODEL_CONFIGS[current_model]["display_name"]
+        st.metric("Model Used", model_name)
     
     # Prediction distribution
     pred_counts = Counter(predictions)
@@ -591,13 +686,18 @@ def display_prediction_results():
     
     result_gdf = st.session_state.predictions
     captured_images = st.session_state.get('captured_images', [])
+    current_model = st.session_state.get('current_model', 'unknown')
+    
+    # Show which model was used
+    model_name = MODEL_CONFIGS.get(current_model, {}).get('display_name', 'Unknown Model')
+    st.info(f"🤖 Results from: **{model_name}**")
     
     # Results table
     st.write("**📊 Detailed Results:**")
     display_cols = ['prediction', 'confidence']
     if len(result_gdf.columns) > 10:  # If has probability columns
         prob_cols = [col for col in result_gdf.columns if col.startswith('prob_')]
-        display_cols.extend(prob_cols[:3])  # Show first 3 probability columns
+        display_cols.extend(prob_cols[:5])  # Show first 5 probability columns
     
     st.dataframe(result_gdf[display_cols], use_container_width=True)
     
@@ -630,9 +730,9 @@ def display_prediction_results():
     st.download_button(
         label="🗺️ Download GeoJSON with Predictions",
         data=geojson_data,
-        file_name="polygon_predictions.geojson",
+        file_name=f"polygon_predictions_{current_model}.geojson",
         mime="application/json",
-        help="Download polygons with classification results as GeoJSON"
+        help=f"Download polygons with classification results from {model_name} as GeoJSON"
     )
 
 if __name__ == "__main__":
