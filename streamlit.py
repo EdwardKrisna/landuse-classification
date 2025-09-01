@@ -647,37 +647,19 @@ def predict_polygons(gdf, zoom, scale):
     
     # Add probability columns
     for class_idx, class_name in idx_to_class.items():
-        # For AGGA-v4, extract just the label part for column names (e.g., "green" from "1: green")
+        # For AGGA-v4, extract just the label part for column names (e.g., "green" from "1 (green)")
         if current_model == "agga-v4":
-            clean_class_name = class_name.split(': ')[1] if ': ' in class_name else class_name
+            # Extract text between parentheses
+            if '(' in class_name and ')' in class_name:
+                clean_class_name = class_name.split('(')[1].split(')')[0]
+            else:
+                clean_class_name = class_name
         else:
             clean_class_name = class_name.split(' - ')[0] if ' - ' in class_name else class_name
         result_gdf[f'prob_{clean_class_name}'] = [float(p[class_idx]) if len(p) > class_idx else 0.0 for p in all_probs]
     
     st.session_state.predictions = result_gdf
     st.session_state.captured_images = captured_images
-    
-    # Display summary
-    st.subheader("📋 Prediction Summary")
-    successful_preds = sum(1 for p in predictions if p != "unknown")
-    failed_preds = len(predictions) - successful_preds
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Polygons", len(predictions))
-    with col2:
-        st.metric("Successful", successful_preds)
-    with col3:
-        st.metric("Failed", failed_preds)
-    with col4:
-        model_name = MODEL_CONFIGS[current_model]["display_name"]
-        st.metric("Model Used", model_name)
-    
-    # Prediction distribution
-    pred_counts = Counter(predictions)
-    st.write("**Prediction Distribution:**")
-    for pred, count in pred_counts.items():
-        st.write(f"- {pred}: {count}")
 
 def display_prediction_results():
     """Display prediction results"""
