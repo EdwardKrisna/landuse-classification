@@ -393,7 +393,7 @@ def predict_single_image(ort_session, image, transform, idx_to_class, model_key=
 # GeoJSON Processing Functions
 # ========================
 def create_results_map(gdf_with_predictions):
-    """Create a map showing predictions"""
+    """Create a map showing predictions grouped by class"""
     if gdf_with_predictions.empty:
         return None
     
@@ -414,59 +414,95 @@ def create_results_map(gdf_with_predictions):
         control=True
     ).add_to(m)
     
-    # Color mapping for different predictions
-    colors = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'lightred', 
-              'beige', 'darkblue', 'darkgreen', 'cadetblue', 'darkpurple', 'white', 
-              'pink', 'lightblue', 'lightgreen', 'gray', 'black', 'lightgray']
+    # Color mapping for different predictions (avoid white/light colors)
+    colors = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'darkblue', 
+              'darkgreen', 'cadetblue', 'darkpurple', 'pink', 'lightblue', 
+              'lightgreen', 'gray', 'black', 'brown', 'cyan', 'magenta']
     
-    # Get unique predictions
+    # Get unique predictions and create color mapping
     unique_predictions = gdf_with_predictions['prediction'].unique()
     color_map = {pred: colors[i % len(colors)] for i, pred in enumerate(unique_predictions)}
     
-    # Add polygons to map
-    for idx, row in gdf_with_predictions.iterrows():
-        prediction = row['prediction']
-        confidence = row.get('confidence', 0)
-        color = color_map.get(prediction, 'gray')
+    # Group polygons by prediction class and add as separate layers
+    for prediction in unique_predictions:
+        class_polygons = gdf_with_predictions[gdf_with_predictions['prediction'] == prediction]
+        color = color_map[prediction]
+        count = len(class_polygons)
         
-        # Create popup text
-        popup_text = f"""
-        <b>Polygon {idx}</b><br>
-        Prediction: {prediction}<br>
-        Confidence: {confidence:.1%}
-        """
+        # Create feature group for this prediction class
+        feature_group = folium.FeatureGroup(name=f"{prediction} ({count})", show=True)
         
-        # Add polygon
-        folium.GeoJson(
-            row.geometry.__geo_interface__,
-            style_function=lambda x, color=color: {
-                'fillColor': color,
-                'color': color,
-                'weight': 2,
-                'fillOpacity': 0.5,
-                'opacity': 0.8
-            },
-            popup=folium.Popup(popup_text, max_width=300),
-            tooltip=f"{prediction} ({confidence:.1%})"
-        ).add_to(m)
+        # Add all polygons of this class to the feature group
+        for idx, row in class_polygons.iterrows():
+            confidence = row.get('confidence', 0)
+            
+            # Create popup text
+            popup_text = f"""
+            <div style="font-family: Arial, sans-serif;">
+                <b>Polygon {idx}</b><br>
+                <b>Class:</b> {prediction}<br>
+                <b>Confidence:</b> {confidence:.1%}
+            </div>
+            """
+            
+            # Add polygon to feature group
+            folium.GeoJson(
+                row.geometry.__geo_interface__,
+                style_function=lambda x, color=color: {
+                    'fillColor': color,
+                    'color': color,
+                    'weight': 2,
+                    'fillOpacity': 0.5,
+                    'opacity': 0.8
+                },
+                popup=folium.Popup(popup_text, max_width=300),
+                tooltip=f"{prediction} ({confidence:.1%})"
+            ).add_to(feature_group)
+        
+        # Add feature group to map
+        feature_group.add_to(m)
     
-    # Add legend
+    # Add improved legend with better visibility
     legend_html = '''
     <div style="position: fixed; 
-                bottom: 50px; left: 50px; width: 200px; height: auto; 
-                background-color: white; border:2px solid grey; z-index:9999; 
-                font-size:14px; padding: 10px">
-    <p><b>Predictions</b></p>
+                bottom: 50px; left: 50px; width: 220px; height: auto; 
+                background-color: rgba(255, 255, 255, 0.9); 
+                border: 2px solid #333; 
+                border-radius: 5px;
+                box-shadow: 0 0 15px rgba(0,0,0,0.2);
+                z-index: 9999; 
+                font-family: Arial, sans-serif;
+                font-size: 12px; 
+                padding: 10px;">
+    <div style="font-weight: bold; font-size: 14px; margin-bottom: 8px; color: #333; border-bottom: 1px solid #ccc; padding-bottom: 5px;">
+        📊 Predictions
+    </div>
     '''
     
-    for pred, color in color_map.items():
-        count = len(gdf_with_predictions[gdf_with_predictions['prediction'] == pred])
-        legend_html += f'<p><i class="fa fa-square" style="color:{color}"></i> {pred} ({count})</p>'
+    # Sort predictions by count for better display
+    pred_counts = [(pred, len(gdf_with_predictions[gdf_with_predictions['prediction'] == pred])) 
+                   for pred in unique_predictions]
+    pred_counts.sort(key=lambda x: x[1], reverse=True)
+    
+    for pred, count in pred_counts:
+        color = color_map[pred]
+        percentage = (count / len(gdf_with_predictions)) * 100
+        legend_html += f'''
+        <div style="margin: 3px 0; display: flex; align-items: center;">
+            <div style="width: 15px; height: 15px; background-color: {color}; 
+                        border: 1px solid #333; margin-right: 8px; flex-shrink: 0;"></div>
+            <span style="color: #333; font-size: 11px; line-height: 1.2;">
+                <b>{pred}</b><br>
+                {count} polygons ({percentage:.1f}%)
+            </span>
+        </div>
+        '''
     
     legend_html += '</div>'
     m.get_root().html.add_child(folium.Element(legend_html))
     
-    folium.LayerControl().add_to(m)
+    # Add layer control
+    folium.LayerControl(position='topright').add_to(m)
     return m
 
 def process_geojson_batch(uploaded_file, model_components, zoom=17, scale=2):
