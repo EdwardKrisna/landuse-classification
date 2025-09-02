@@ -663,30 +663,30 @@ def upload_geojson_tab():
             
             st.success(f"✅ Loaded GeoJSON with {len(gdf_preview)} features")
             
-            # Show file info
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Features", len(gdf_preview))
-            with col2:
-                st.metric("CRS", str(gdf_preview.crs))
-            with col3:
-                bounds = gdf_preview.total_bounds
-                st.metric("Bounds", f"{bounds[0]:.3f}, {bounds[1]:.3f}")
+            # # Show file info
+            # col1, col2, col3 = st.columns(3)
+            # with col1:
+            #     st.metric("Total Features", len(gdf_preview))
+            # with col2:
+            #     st.metric("CRS", str(gdf_preview.crs))
+            # with col3:
+            #     bounds = gdf_preview.total_bounds
+            #     st.metric("Bounds", f"{bounds[0]:.3f}, {bounds[1]:.3f}")
             
-            # Show column info
-            st.write("**📋 Available Columns:**")
-            cols_info = []
-            for col in gdf_preview.columns:
-                if col != 'geometry':
-                    dtype = str(gdf_preview[col].dtype)
-                    unique_count = gdf_preview[col].nunique()
-                    cols_info.append(f"- **{col}** ({dtype}) - {unique_count} unique values")
+            # # Show column info
+            # st.write("**📋 Available Columns:**")
+            # cols_info = []
+            # for col in gdf_preview.columns:
+            #     if col != 'geometry':
+            #         dtype = str(gdf_preview[col].dtype)
+            #         unique_count = gdf_preview[col].nunique()
+            #         cols_info.append(f"- **{col}** ({dtype}) - {unique_count} unique values")
             
-            for info in cols_info[:5]:  # Show first 5 columns
-                st.write(info)
+            # for info in cols_info[:5]:  # Show first 5 columns
+            #     st.write(info)
             
-            if len(cols_info) > 5:
-                st.write(f"... and {len(cols_info) - 5} more columns")
+            # if len(cols_info) > 5:
+            #     st.write(f"... and {len(cols_info) - 5} more columns")
             
             # Process button
             current_model_name = MODEL_CONFIGS[st.session_state.current_model]["display_name"]
