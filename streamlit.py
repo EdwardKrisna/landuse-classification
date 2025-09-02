@@ -733,6 +733,22 @@ def upload_geojson_tab():
     # Display results if available
     if 'batch_predictions' in st.session_state and st.session_state.batch_predictions is not None:
         st.markdown("---")
+        st.markdown("### 📍 Search Setup")
+        
+        # Check if Google API key is available
+        try:
+            google_api_key = st.secrets.get("GOOGLE_API_KEY", "")
+            if google_api_key:
+                st.success("🔍 Google Places search enabled")
+                st.markdown("*Search for locations in the interactive map*")
+            else:
+                st.warning("⚠️ Google API key not configured")
+                st.markdown("*Add GOOGLE_API_KEY to Streamlit secrets to enable search*")
+        except:
+            st.warning("⚠️ Google API key not configured")
+            st.markdown("*Add GOOGLE_API_KEY to Streamlit secrets to enable search*")
+        
+        st.markdown("---")
         st.subheader("📊 Batch Processing Results")
         
         result_gdf = st.session_state.batch_predictions
@@ -776,7 +792,7 @@ def upload_geojson_tab():
             help=f"Download batch processing results as GeoJSON"
         )
 def create_map(center_lat=-7.25, center_lon=112.75, zoom_start=12):
-    """Create interactive map with drawing tools"""
+    """Create interactive map with drawing tools and search functionality"""
     m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom_start)
     
     # Add satellite layer
@@ -787,6 +803,106 @@ def create_map(center_lat=-7.25, center_lon=112.75, zoom_start=12):
         overlay=False,
         control=True
     ).add_to(m)
+    
+    # Add search functionality using Google Places API
+    try:
+        google_api_key = st.secrets.get("GOOGLE_API_KEY", "")
+        if google_api_key:
+            # Add search control with Google Places API
+            search_html = f'''
+            <div id="search-container" style="position: absolute; top: 10px; left: 60px; z-index: 1000;">
+                <div style="background: white; padding: 5px; border-radius: 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.2);">
+                    <input type="text" id="search-input" placeholder="🔍 Search location..." 
+                           style="width: 250px; padding: 8px; border: 1px solid #ccc; border-radius: 3px; font-size: 14px;">
+                    <div id="search-results" style="max-height: 200px; overflow-y: auto; margin-top: 5px; display: none;">
+                    </div>
+                </div>
+            </div>
+            
+            <script>
+            var map_obj = window[Object.keys(window).find(key => key.startsWith('map_'))];
+            var searchInput = document.getElementById('search-input');
+            var searchResults = document.getElementById('search-results');
+            var searchTimeout;
+            
+            searchInput.addEventListener('input', function() {{
+                clearTimeout(searchTimeout);
+                var query = this.value.trim();
+                
+                if (query.length < 3) {{
+                    searchResults.style.display = 'none';
+                    return;
+                }}
+                
+                searchTimeout = setTimeout(function() {{
+                    searchPlaces(query);
+                }}, 500);
+            }});
+            
+            function searchPlaces(query) {{
+                var service = new google.maps.places.PlacesService(document.createElement('div'));
+                var request = {{
+                    query: query,
+                    fields: ['name', 'geometry', 'formatted_address', 'place_id']
+                }};
+                
+                service.textSearch(request, function(results, status) {{
+                    if (status === google.maps.places.PlacesServiceStatus.OK && results) {{
+                        displaySearchResults(results.slice(0, 5)); // Show top 5 results
+                    }} else {{
+                        searchResults.style.display = 'none';
+                    }}
+                }});
+            }}
+            
+            function displaySearchResults(results) {{
+                var html = '';
+                results.forEach(function(place, index) {{
+                    var name = place.name || 'Unknown';
+                    var address = place.formatted_address || '';
+                    html += '<div style="padding: 8px; cursor: pointer; border-bottom: 1px solid #eee; hover: background: #f5f5f5;" ' +
+                           'onclick="selectPlace(' + place.geometry.location.lat() + ', ' + place.geometry.location.lng() + ', \'' + 
+                           name.replace(/'/g, "\\'") + '\')">' +
+                           '<div style="font-weight: bold; font-size: 13px;">' + name + '</div>' +
+                           '<div style="font-size: 11px; color: #666;">' + address + '</div>' +
+                           '</div>';
+                }});
+                
+                searchResults.innerHTML = html;
+                searchResults.style.display = 'block';
+            }}
+            
+            function selectPlace(lat, lng, name) {{
+                // Center map on selected location
+                map_obj.setView([lat, lng], 15);
+                
+                // Add marker for the searched location
+                L.marker([lat, lng])
+                 .addTo(map_obj)
+                 .bindPopup('<b>' + name + '</b>')
+                 .openPopup();
+                
+                // Hide search results and clear input
+                searchResults.style.display = 'none';
+                searchInput.value = name;
+            }}
+            
+            // Hide search results when clicking outside
+            document.addEventListener('click', function(e) {{
+                if (!document.getElementById('search-container').contains(e.target)) {{
+                    searchResults.style.display = 'none';
+                }}
+            }});
+            </script>
+            
+            <script src="https://maps.googleapis.com/maps/api/js?key={google_api_key}&libraries=places"></script>
+            '''
+            
+            m.get_root().html.add_child(folium.Element(search_html))
+        else:
+            st.warning("⚠️ Google API key not found in secrets. Search functionality disabled.")
+    except Exception as e:
+        st.warning(f"⚠️ Error setting up search: {str(e)}")
     
     # Add drawing functionality using plugins
     from folium.plugins import Draw
