@@ -685,24 +685,13 @@ def draw_polygons_tab():
     else:
         st.info("🔍 Location search unavailable - Google Maps API key not configured")
     
-    # Get map parameters (use search results if available)
+    # Get map parameters (use search results if available, otherwise use defaults)
     if 'map_center' in st.session_state and 'map_zoom' in st.session_state:
         center_lat, center_lon = st.session_state.map_center
         zoom_start = st.session_state.map_zoom
-        search_loc = st.session_state.get('search_location', None)
     else:
         # Default to Jakarta
         center_lat, center_lon, zoom_start = -7.25, 112.75, 12
-        search_loc = None
-    
-    # Fixed settings for image capture (same as training data)
-    img_zoom, img_scale = 17, 2
-    
-    # Create and display map
-    if search_loc:
-        m = create_map_with_search_marker(center_lat, center_lon, zoom_start, search_loc)
-    else:
-        m = create_map(center_lat, center_lon, zoom_start)
     
     # Reset location button
     if 'search_location' in st.session_state:
@@ -716,16 +705,31 @@ def draw_polygons_tab():
                 del st.session_state.map_zoom
             st.rerun()
     
-    # Display map
+    # Fixed settings (same as training data) 
+    img_zoom, img_scale = 17, 2  # Fixed to match training
+    
+    # Create and display map (back to original simple version)
+    m = create_map(center_lat, center_lon, zoom_start)
+    
+    # Add search marker if available
+    if 'search_location' in st.session_state:
+        lat, lon, formatted_address = st.session_state.search_location
+        folium.Marker(
+            [lat, lon],
+            popup=folium.Popup(f"<b>📍 Search Result</b><br>{formatted_address}", max_width=300),
+            tooltip=f"📍 {formatted_address}",
+            icon=folium.Icon(color='green', icon='search')
+        ).add_to(m)
+    
     map_data = st_folium(
         m, 
         width=None,  # Use full width
         height=600,  # Increased height
         returned_objects=["all_drawings"],
-        key="map_widget_search"  # Different key to avoid conflicts
+        key="map_widget"  # Back to original key
     )
     
-    # Process drawn polygons
+    # Process drawn polygons (back to original working code)
     if map_data['all_drawings']:
         gdf = process_drawn_features(map_data)
         
@@ -946,21 +950,7 @@ def create_map(center_lat=-7.25, center_lon=112.75, zoom_start=12):
     folium.LayerControl().add_to(m)
     return m
 
-def create_map_with_search_marker(center_lat=-7.25, center_lon=112.75, zoom_start=12, search_location=None):
-    """Create interactive map with drawing tools and optional search marker"""
-    m = create_map(center_lat, center_lon, zoom_start)
-    
-    # Add search location marker if provided
-    if search_location:
-        lat, lon, formatted_address = search_location
-        folium.Marker(
-            [lat, lon],
-            popup=folium.Popup(f"<b>📍 Search Result</b><br>{formatted_address}", max_width=300),
-            tooltip=f"📍 {formatted_address}",
-            icon=folium.Icon(color='green', icon='search')
-        ).add_to(m)
-    
-    return m
+
 
 def process_drawn_features(map_data):
     """Process features drawn on the map"""
