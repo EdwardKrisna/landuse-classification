@@ -337,7 +337,7 @@ def polygon_to_image(poly, zoom: int, scale: int = 2):
 # ========================
 # Prediction Functions
 # ========================
-def predict_single_image(ort_session, image, transform, idx_to_class):
+def predict_single_image(ort_session, image, transform, idx_to_class, model_key=None):
     """Predict single image using ONNX Runtime"""
     if isinstance(image, Image.Image):
         image = np.array(image)
@@ -360,7 +360,16 @@ def predict_single_image(ort_session, image, transform, idx_to_class):
     predicted_class_idx = np.argmax(probabilities)
     confidence = probabilities[predicted_class_idx]
 
-    predicted_class = idx_to_class.get(predicted_class_idx, f'class_{predicted_class_idx}')
+    # For AGGA-v4, we need to map the raw prediction to the label format
+    if model_key == "agga-v4":
+        # The model outputs 0,1,2,3,4,5 but we want to display as "1 (green)", "2 (slum+slum-to-normal)", etc.
+        class_labels = MODEL_CONFIGS["agga-v4"]["class_labels"]
+        actual_class_num = predicted_class_idx + 1  # Convert 0-based to 1-based
+        class_label = class_labels.get(actual_class_num, f'class_{actual_class_num}')
+        predicted_class = f"{actual_class_num} ({class_label})"
+    else:
+        predicted_class = idx_to_class.get(predicted_class_idx, f'class_{predicted_class_idx}')
+    
     return predicted_class, float(confidence), probabilities
 
 # ========================
@@ -612,7 +621,7 @@ def predict_polygons(gdf, zoom, scale):
             if img is not None:
                 # Make prediction using ONNX
                 pred_class, confidence, probs = predict_single_image(
-                    ort_session, img, transform, idx_to_class
+                    ort_session, img, transform, idx_to_class, current_model
                 )
                 
                 predictions.append(pred_class)
