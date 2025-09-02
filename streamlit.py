@@ -390,6 +390,58 @@ def predict_single_image(ort_session, image, transform, idx_to_class, model_key=
     return predicted_class, float(confidence), probabilities
 
 # ========================
+# Geocoding Service
+# ========================
+class GeocodeService:
+    """Handle geocoding using Google Maps Geocoding API"""
+    
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://maps.googleapis.com/maps/api/geocode/json"
+    
+    def geocode_address(self, address: str) -> tuple:
+        """Geocode an address to get latitude and longitude"""
+        try:
+            params = {
+                'address': address,
+                'key': self.api_key
+            }
+            
+            response = requests.get(self.base_url, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if data['status'] == 'OK' and data['results']:
+                result = data['results'][0]
+                location = result['geometry']['location']
+                formatted_address = result['formatted_address']
+                
+                return (
+                    location['lat'],
+                    location['lng'],
+                    formatted_address
+                )
+            else:
+                return None, None, None
+                
+        except Exception as e:
+            st.error(f"Geocoding error: {str(e)}")
+            return None, None, None
+
+def initialize_geocode_service():
+    """Initialize geocoding service with API key from secrets"""
+    try:
+        google_api_key = st.secrets["google"]["api_key"]
+        if 'geocode_service' not in st.session_state:
+            st.session_state.geocode_service = GeocodeService(google_api_key)
+        return st.session_state.geocode_service
+    except KeyError:
+        st.warning("Google Maps API key not found. Location search features unavailable.")
+        st.session_state.geocode_service = None
+        return None
+
+# ========================
 # GeoJSON Processing Functions
 # ========================
 def create_results_map(gdf_with_predictions):
@@ -593,21 +645,84 @@ def process_geojson_batch(uploaded_file, model_components, zoom=17, scale=2):
 # Tab Functions
 # ========================
 def draw_polygons_tab():
-    """Tab for drawing polygons interactively"""
-    st.subheader("🗺️ Interactive Map")
+    """Tab for drawing polygons interactively with location search"""
+    st.subheader("🗺️ Interactive Map with Location Search")
     
-    # Fixed settings (same as training data)
-    center_lat, center_lon, zoom_start = -7.25, 112.75, 12
-    img_zoom, img_scale = 17, 2  # Fixed to match training
+    # Initialize geocoding service
+    geocode_service = initialize_geocode_service()
+    
+    # Location search section
+    if geocode_service:
+        st.markdown("### 🔍 Search Location")
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            search_query = st.text_input(
+                "Search for a location:",
+                placeholder="Enter address, place name, or coordinates...",
+                help="Search for any location worldwide (e.g., 'Jakarta', 'Times Square NY', 'Monas Jakarta')"
+            )
+        
+        with col2:
+            search_button = st.button("🔍 Search", type="secondary", use_container_width=True)
+        
+        # Handle search
+        search_location = None
+        if search_button and search_query.strip():
+            with st.spinner(f"Searching for '{search_query}'..."):
+                lat, lon, formatted_address = geocode_service.geocode_address(search_query)
+                
+                if lat and lon:
+                    search_location = (lat, lon, formatted_address)
+                    st.success(f"📍 Found: {formatted_address}")
+                    
+                    # Store search result in session state for map centering
+                    st.session_state.search_location = search_location
+                    st.session_state.map_center = (lat, lon)
+                    st.session_state.map_zoom = 15  # Closer zoom for search results
+                else:
+                    st.error(f"❌ Could not find location: '{search_query}'")
+    else:
+        st.info("🔍 Location search unavailable - Google Maps API key not configured")
+    
+    # Get map parameters (use search results if available)
+    if 'map_center' in st.session_state and 'map_zoom' in st.session_state:
+        center_lat, center_lon = st.session_state.map_center
+        zoom_start = st.session_state.map_zoom
+        search_loc = st.session_state.get('search_location', None)
+    else:
+        # Default to Jakarta
+        center_lat, center_lon, zoom_start = -7.25, 112.75, 12
+        search_loc = None
+    
+    # Fixed settings for image capture (same as training data)
+    img_zoom, img_scale = 17, 2
     
     # Create and display map
-    m = create_map(center_lat, center_lon, zoom_start)
+    if search_loc:
+        m = create_map_with_search_marker(center_lat, center_lon, zoom_start, search_loc)
+    else:
+        m = create_map(center_lat, center_lon, zoom_start)
+    
+    # Reset location button
+    if 'search_location' in st.session_state:
+        if st.button("🏠 Reset to Default Location", help="Return to default Jakarta view"):
+            # Clear search results
+            if 'search_location' in st.session_state:
+                del st.session_state.search_location
+            if 'map_center' in st.session_state:
+                del st.session_state.map_center
+            if 'map_zoom' in st.session_state:
+                del st.session_state.map_zoom
+            st.rerun()
+    
+    # Display map
     map_data = st_folium(
         m, 
         width=None,  # Use full width
         height=600,  # Increased height
         returned_objects=["all_drawings"],
-        key="map_widget"  # Add key to prevent reloading issues
+        key="map_widget_search"  # Different key to avoid conflicts
     )
     
     # Process drawn polygons
@@ -633,7 +748,7 @@ def draw_polygons_tab():
         else:
             st.info("👆 Draw some polygons on the map to get started")
     else:
-        st.info("👆 Draw some polygons on the map to get started")
+        st.info("👆 Use the search bar above to find a location, then draw polygons on the map")
 
     # Results section
     st.markdown("---")
@@ -733,22 +848,6 @@ def upload_geojson_tab():
     # Display results if available
     if 'batch_predictions' in st.session_state and st.session_state.batch_predictions is not None:
         st.markdown("---")
-        st.markdown("### 📍 Search Setup")
-        
-        # Check if Google API key is available
-        try:
-            google_api_key = st.secrets.get("GOOGLE_API_KEY", "")
-            if google_api_key:
-                st.success("🔍 Google Places search enabled")
-                st.markdown("*Search for locations in the interactive map*")
-            else:
-                st.warning("⚠️ Google API key not configured")
-                st.markdown("*Add GOOGLE_API_KEY to Streamlit secrets to enable search*")
-        except:
-            st.warning("⚠️ Google API key not configured")
-            st.markdown("*Add GOOGLE_API_KEY to Streamlit secrets to enable search*")
-        
-        st.markdown("---")
         st.subheader("📊 Batch Processing Results")
         
         result_gdf = st.session_state.batch_predictions
@@ -792,7 +891,7 @@ def upload_geojson_tab():
             help=f"Download batch processing results as GeoJSON"
         )
 def create_map(center_lat=-7.25, center_lon=112.75, zoom_start=12):
-    """Create interactive map with drawing tools and search functionality"""
+    """Create interactive map with drawing tools"""
     m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom_start)
     
     # Add satellite layer
@@ -803,106 +902,6 @@ def create_map(center_lat=-7.25, center_lon=112.75, zoom_start=12):
         overlay=False,
         control=True
     ).add_to(m)
-    
-    # Add search functionality using Google Places API
-    try:
-        google_api_key = st.secrets.get("GOOGLE_API_KEY", "")
-        if google_api_key:
-            # Add search control with Google Places API
-            search_html = f'''
-            <div id="search-container" style="position: absolute; top: 10px; left: 60px; z-index: 1000;">
-                <div style="background: white; padding: 5px; border-radius: 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.2);">
-                    <input type="text" id="search-input" placeholder="🔍 Search location..." 
-                           style="width: 250px; padding: 8px; border: 1px solid #ccc; border-radius: 3px; font-size: 14px;">
-                    <div id="search-results" style="max-height: 200px; overflow-y: auto; margin-top: 5px; display: none;">
-                    </div>
-                </div>
-            </div>
-            
-            <script>
-            var map_obj = window[Object.keys(window).find(key => key.startsWith('map_'))];
-            var searchInput = document.getElementById('search-input');
-            var searchResults = document.getElementById('search-results');
-            var searchTimeout;
-            
-            searchInput.addEventListener('input', function() {{
-                clearTimeout(searchTimeout);
-                var query = this.value.trim();
-                
-                if (query.length < 3) {{
-                    searchResults.style.display = 'none';
-                    return;
-                }}
-                
-                searchTimeout = setTimeout(function() {{
-                    searchPlaces(query);
-                }}, 500);
-            }});
-            
-            function searchPlaces(query) {{
-                var service = new google.maps.places.PlacesService(document.createElement('div'));
-                var request = {{
-                    query: query,
-                    fields: ['name', 'geometry', 'formatted_address', 'place_id']
-                }};
-                
-                service.textSearch(request, function(results, status) {{
-                    if (status === google.maps.places.PlacesServiceStatus.OK && results) {{
-                        displaySearchResults(results.slice(0, 5)); // Show top 5 results
-                    }} else {{
-                        searchResults.style.display = 'none';
-                    }}
-                }});
-            }}
-            
-            function displaySearchResults(results) {{
-                var html = '';
-                results.forEach(function(place, index) {{
-                    var name = place.name || 'Unknown';
-                    var address = place.formatted_address || '';
-                    html += '<div style="padding: 8px; cursor: pointer; border-bottom: 1px solid #eee; hover: background: #f5f5f5;" ' +
-                           'onclick="selectPlace(' + place.geometry.location.lat() + ', ' + place.geometry.location.lng() + ', \'' + 
-                           name.replace(/'/g, "\\'") + '\')">' +
-                           '<div style="font-weight: bold; font-size: 13px;">' + name + '</div>' +
-                           '<div style="font-size: 11px; color: #666;">' + address + '</div>' +
-                           '</div>';
-                }});
-                
-                searchResults.innerHTML = html;
-                searchResults.style.display = 'block';
-            }}
-            
-            function selectPlace(lat, lng, name) {{
-                // Center map on selected location
-                map_obj.setView([lat, lng], 15);
-                
-                // Add marker for the searched location
-                L.marker([lat, lng])
-                 .addTo(map_obj)
-                 .bindPopup('<b>' + name + '</b>')
-                 .openPopup();
-                
-                // Hide search results and clear input
-                searchResults.style.display = 'none';
-                searchInput.value = name;
-            }}
-            
-            // Hide search results when clicking outside
-            document.addEventListener('click', function(e) {{
-                if (!document.getElementById('search-container').contains(e.target)) {{
-                    searchResults.style.display = 'none';
-                }}
-            }});
-            </script>
-            
-            <script src="https://maps.googleapis.com/maps/api/js?key={google_api_key}&libraries=places"></script>
-            '''
-            
-            m.get_root().html.add_child(folium.Element(search_html))
-        else:
-            st.warning("⚠️ Google API key not found in secrets. Search functionality disabled.")
-    except Exception as e:
-        st.warning(f"⚠️ Error setting up search: {str(e)}")
     
     # Add drawing functionality using plugins
     from folium.plugins import Draw
@@ -945,6 +944,22 @@ def create_map(center_lat=-7.25, center_lon=112.75, zoom_start=12):
     draw.add_to(m)
     
     folium.LayerControl().add_to(m)
+    return m
+
+def create_map_with_search_marker(center_lat=-7.25, center_lon=112.75, zoom_start=12, search_location=None):
+    """Create interactive map with drawing tools and optional search marker"""
+    m = create_map(center_lat, center_lon, zoom_start)
+    
+    # Add search location marker if provided
+    if search_location:
+        lat, lon, formatted_address = search_location
+        folium.Marker(
+            [lat, lon],
+            popup=folium.Popup(f"<b>📍 Search Result</b><br>{formatted_address}", max_width=300),
+            tooltip=f"📍 {formatted_address}",
+            icon=folium.Icon(color='green', icon='search')
+        ).add_to(m)
+    
     return m
 
 def process_drawn_features(map_data):
@@ -1020,6 +1035,7 @@ def main():
         st.markdown("### 📋 Usage Options")
         st.markdown("""
         **🎯 Interactive Drawing:**
+        - 🔍 Search locations worldwide
         - Draw polygons on the map
         - Real-time classification
         - View captured images
@@ -1029,6 +1045,12 @@ def main():
         - Classify all polygons
         - Download results with map visualization
         """)
+        st.markdown("---")
+        st.markdown("### 🔍 Location Search")
+        if 'geocode_service' in st.session_state and st.session_state.geocode_service:
+            st.markdown("✅ Google Maps API connected")
+        else:
+            st.markdown("❌ Google Maps API not configured")
         st.markdown("---")
         st.markdown("### ⚙️ Settings")
         st.markdown("**Image Capture Settings:**")
