@@ -273,7 +273,7 @@ def download_tile(url, retries=3, delay=1):
     return None
 
 def polygon_to_image(poly, zoom: int, scale: int = 2):
-    """Convert polygon to satellite image - EXACTLY same as your code"""
+    """Convert polygon to satellite image - Using the EXACT method from extract_patches.py"""
     if poly is None or poly.is_empty or not poly.is_valid:
         return None
 
@@ -281,7 +281,10 @@ def polygon_to_image(poly, zoom: int, scale: int = 2):
     if any(math.isnan(v) for v in (minx, miny, maxx, maxy)):
         return None
 
+    # FIXED: Correct tile range calculation (same as extract_patches.py)
+    # Top-left corner of bounding box
     x_min, y_min = lonlat_to_tile(minx, maxy, zoom)
+    # Bottom-right corner of bounding box
     x_max, y_max = lonlat_to_tile(maxx, miny, zoom)
 
     cols = x_max - x_min + 1
@@ -304,31 +307,45 @@ def polygon_to_image(poly, zoom: int, scale: int = 2):
 
             mosaic.paste(tile, (ix * tile_size, iy * tile_size))
 
+    # FIXED: Calculate actual geographic bounds covered by the tiles
     actual_minx, actual_maxy = tile_to_lonlat(x_min, y_min, zoom)
     actual_maxx, actual_miny = tile_to_lonlat(x_max + 1, y_max + 1, zoom)
 
+    # Create proper geotransform using actual tile bounds
     transform = from_bounds(actual_minx, actual_miny, actual_maxx, actual_maxy,
                            mosaic.width, mosaic.height)
 
+    # Convert mosaic to numpy array
     arr = np.array(mosaic)
 
+    # Apply polygon mask using rasterio
     with MemoryFile() as memfile:
         with memfile.open(
-            driver="GTiff", height=arr.shape[0], width=arr.shape[1], count=3,
-            dtype=arr.dtype, crs="EPSG:4326", transform=transform
+            driver="GTiff",
+            height=arr.shape[0],
+            width=arr.shape[1],
+            count=3,
+            dtype=arr.dtype,
+            crs="EPSG:4326",
+            transform=transform
         ) as tmp:
+            # Write RGB bands
             for b in range(3):
                 tmp.write(arr[:, :, b], b + 1)
 
+        # Read back and apply mask
         with memfile.open() as src:
             out_image, _ = mask(src, [mapping(poly)], crop=False)
 
+    # Check if mask produced valid output
     if not out_image.any():
         return None
 
+    # Convert to H×W×3 format and create PIL image
     png_arr = np.transpose(out_image, (1, 2, 0))
     img = Image.fromarray(png_arr)
 
+    # Pad to 640×640 (same as extract_patches.py)
     from PIL import ImageOps
     img = ImageOps.pad(img, (640, 640), color=(0, 0, 0))
 
@@ -373,8 +390,355 @@ def predict_single_image(ort_session, image, transform, idx_to_class, model_key=
     return predicted_class, float(confidence), probabilities
 
 # ========================
-# UI Functions
+# GeoJSON Processing Functions
 # ========================
+def create_results_map(gdf_with_predictions):
+    """Create a map showing predictions"""
+    if gdf_with_predictions.empty:
+        return None
+    
+    # Calculate map center
+    bounds = gdf_with_predictions.total_bounds
+    center_lat = (bounds[1] + bounds[3]) / 2
+    center_lon = (bounds[0] + bounds[2]) / 2
+    
+    # Create map
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
+    
+    # Add satellite layer
+    folium.TileLayer(
+        tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        attr='Google Satellite',
+        name='Google Satellite',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    
+    # Color mapping for different predictions
+    colors = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'lightred', 
+              'beige', 'darkblue', 'darkgreen', 'cadetblue', 'darkpurple', 'white', 
+              'pink', 'lightblue', 'lightgreen', 'gray', 'black', 'lightgray']
+    
+    # Get unique predictions
+    unique_predictions = gdf_with_predictions['prediction'].unique()
+    color_map = {pred: colors[i % len(colors)] for i, pred in enumerate(unique_predictions)}
+    
+    # Add polygons to map
+    for idx, row in gdf_with_predictions.iterrows():
+        prediction = row['prediction']
+        confidence = row.get('confidence', 0)
+        color = color_map.get(prediction, 'gray')
+        
+        # Create popup text
+        popup_text = f"""
+        <b>Polygon {idx}</b><br>
+        Prediction: {prediction}<br>
+        Confidence: {confidence:.1%}
+        """
+        
+        # Add polygon
+        folium.GeoJson(
+            row.geometry.__geo_interface__,
+            style_function=lambda x, color=color: {
+                'fillColor': color,
+                'color': color,
+                'weight': 2,
+                'fillOpacity': 0.5,
+                'opacity': 0.8
+            },
+            popup=folium.Popup(popup_text, max_width=300),
+            tooltip=f"{prediction} ({confidence:.1%})"
+        ).add_to(m)
+    
+    # Add legend
+    legend_html = '''
+    <div style="position: fixed; 
+                bottom: 50px; left: 50px; width: 200px; height: auto; 
+                background-color: white; border:2px solid grey; z-index:9999; 
+                font-size:14px; padding: 10px">
+    <p><b>Predictions</b></p>
+    '''
+    
+    for pred, color in color_map.items():
+        count = len(gdf_with_predictions[gdf_with_predictions['prediction'] == pred])
+        legend_html += f'<p><i class="fa fa-square" style="color:{color}"></i> {pred} ({count})</p>'
+    
+    legend_html += '</div>'
+    m.get_root().html.add_child(folium.Element(legend_html))
+    
+    folium.LayerControl().add_to(m)
+    return m
+
+def process_geojson_batch(uploaded_file, model_components, zoom=17, scale=2):
+    """Process uploaded GeoJSON file and return predictions"""
+    try:
+        # Read GeoJSON
+        gdf = gpd.read_file(uploaded_file)
+        gdf = gdf.to_crs('EPSG:4326')  # Ensure WGS84
+        
+        # Remove invalid geometries
+        gdf = gdf.loc[~gdf.geometry.is_empty & gdf.geometry.notnull()].copy()
+        
+        if len(gdf) == 0:
+            st.error("No valid polygons found in the GeoJSON file")
+            return None
+        
+        # Get model components
+        ort_session, transform, idx_to_class, current_model = model_components
+        
+        st.info(f"Processing {len(gdf)} polygons from GeoJSON...")
+        
+        predictions = []
+        confidences = []
+        all_probs = []
+        
+        # Create progress tracking
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for idx, row in gdf.iterrows():
+            progress = (idx + 1) / len(gdf)
+            progress_bar.progress(progress)
+            status_text.text(f"Processing polygon {idx+1}/{len(gdf)}")
+            
+            try:
+                # Generate image from polygon
+                img = polygon_to_image(row.geometry, zoom, scale)
+                
+                if img is not None:
+                    # Make prediction
+                    pred_class, confidence, probs = predict_single_image(
+                        ort_session, img, transform, idx_to_class, current_model
+                    )
+                    
+                    predictions.append(pred_class)
+                    confidences.append(confidence)
+                    all_probs.append(probs)
+                    
+                else:
+                    predictions.append("unknown")
+                    confidences.append(0.0)
+                    all_probs.append(np.zeros(len(idx_to_class)))
+                    
+            except Exception as e:
+                st.warning(f"Error processing polygon {idx+1}: {str(e)}")
+                predictions.append("unknown")
+                confidences.append(0.0)
+                all_probs.append(np.zeros(len(idx_to_class)))
+        
+        progress_bar.progress(1.0)
+        status_text.text("✅ Processing complete!")
+        
+        # Add predictions to GeoDataFrame
+        result_gdf = gdf.copy()
+        result_gdf['prediction'] = predictions
+        result_gdf['confidence'] = confidences
+        result_gdf['model_used'] = current_model
+        
+        # Add probability columns
+        for class_idx, class_name in idx_to_class.items():
+            if current_model == "agga-v4":
+                # Extract text between parentheses
+                if '(' in class_name and ')' in class_name:
+                    clean_class_name = class_name.split('(')[1].split(')')[0]
+                else:
+                    clean_class_name = class_name
+            else:
+                clean_class_name = class_name.split(' - ')[0] if ' - ' in class_name else class_name
+            result_gdf[f'prob_{clean_class_name}'] = [float(p[class_idx]) if len(p) > class_idx else 0.0 for p in all_probs]
+        
+        return result_gdf
+        
+    except Exception as e:
+        st.error(f"Error processing GeoJSON file: {str(e)}")
+        return None
+
+# ========================
+# Tab Functions
+# ========================
+def draw_polygons_tab():
+    """Tab for drawing polygons interactively"""
+    st.subheader("🗺️ Interactive Map")
+    
+    # Fixed settings (same as training data)
+    center_lat, center_lon, zoom_start = -7.25, 112.75, 12
+    img_zoom, img_scale = 17, 2  # Fixed to match training
+    
+    # Create and display map
+    m = create_map(center_lat, center_lon, zoom_start)
+    map_data = st_folium(
+        m, 
+        width=None,  # Use full width
+        height=600,  # Increased height
+        returned_objects=["all_drawings"],
+        key="map_widget"  # Add key to prevent reloading issues
+    )
+    
+    # Process drawn polygons
+    if map_data['all_drawings']:
+        gdf = process_drawn_features(map_data)
+        
+        if gdf is not None and len(gdf) > 0:
+            st.success(f"✅ {len(gdf)} polygon(s) drawn")
+            
+            # Show polygon info
+            with st.expander("📊 Polygon Details"):
+                for idx, row in gdf.iterrows():
+                    st.write(f"**Polygon {idx+1}:**")
+                    st.write(f"- Area: {row.geometry.area:.8f}°²")
+                    st.write(f"- Perimeter: {row.geometry.length:.8f}°")
+                    bounds = row.geometry.bounds
+                    st.write(f"- Bounds: ({bounds[0]:.4f}, {bounds[1]:.4f}) to ({bounds[2]:.4f}, {bounds[3]:.4f})")
+            
+            # Prediction button
+            current_model_name = MODEL_CONFIGS[st.session_state.current_model]["display_name"]
+            if st.button(f"🤖 Predict Classifications using {current_model_name}", type="primary", use_container_width=True):
+                predict_polygons(gdf, img_zoom, img_scale)
+        else:
+            st.info("👆 Draw some polygons on the map to get started")
+    else:
+        st.info("👆 Draw some polygons on the map to get started")
+
+    # Results section
+    st.markdown("---")
+    st.subheader("📊 Results")
+    
+    if 'predictions' in st.session_state and st.session_state.predictions is not None and len(st.session_state.predictions) > 0:
+        display_prediction_results()
+    else:
+        st.info("Draw polygons and click 'Predict' to see results here")
+
+def upload_geojson_tab():
+    """Tab for uploading and processing GeoJSON files"""
+    st.subheader("📁 Upload GeoJSON for Batch Processing")
+    
+    # File uploader
+    uploaded_file = st.file_uploader(
+        "Choose a GeoJSON file",
+        type=['geojson', 'json'],
+        help="Upload a GeoJSON file containing polygons to classify"
+    )
+    
+    if uploaded_file is not None:
+        try:
+            # Preview the uploaded file
+            gdf_preview = gpd.read_file(uploaded_file)
+            gdf_preview = gdf_preview.to_crs('EPSG:4326')
+            
+            st.success(f"✅ Loaded GeoJSON with {len(gdf_preview)} features")
+            
+            # Show file info
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Features", len(gdf_preview))
+            with col2:
+                st.metric("CRS", str(gdf_preview.crs))
+            with col3:
+                bounds = gdf_preview.total_bounds
+                st.metric("Bounds", f"{bounds[0]:.3f}, {bounds[1]:.3f}")
+            
+            # Show column info
+            st.write("**📋 Available Columns:**")
+            cols_info = []
+            for col in gdf_preview.columns:
+                if col != 'geometry':
+                    dtype = str(gdf_preview[col].dtype)
+                    unique_count = gdf_preview[col].nunique()
+                    cols_info.append(f"- **{col}** ({dtype}) - {unique_count} unique values")
+            
+            for info in cols_info[:5]:  # Show first 5 columns
+                st.write(info)
+            
+            if len(cols_info) > 5:
+                st.write(f"... and {len(cols_info) - 5} more columns")
+            
+            # Process button
+            current_model_name = MODEL_CONFIGS[st.session_state.current_model]["display_name"]
+            if st.button(f"🤖 Process with {current_model_name}", type="primary", use_container_width=True):
+                # Get model components
+                model_components = (
+                    st.session_state.ort_session,
+                    st.session_state.transform,
+                    st.session_state.idx_to_class,
+                    st.session_state.current_model
+                )
+                
+                # Process the GeoJSON
+                result_gdf = process_geojson_batch(uploaded_file, model_components)
+                
+                if result_gdf is not None:
+                    # Store results
+                    st.session_state.batch_predictions = result_gdf
+                    st.session_state.batch_processed = True
+                    
+                    # Show summary
+                    st.subheader("📊 Processing Summary")
+                    successful_preds = sum(1 for p in result_gdf['prediction'] if p != "unknown")
+                    failed_preds = len(result_gdf) - successful_preds
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total Processed", len(result_gdf))
+                    with col2:
+                        st.metric("Successful", successful_preds)
+                    with col3:
+                        st.metric("Failed", failed_preds)
+                    
+                    # Prediction distribution
+                    pred_counts = Counter(result_gdf['prediction'])
+                    st.write("**🏷️ Prediction Distribution:**")
+                    for pred, count in pred_counts.items():
+                        percentage = (count / len(result_gdf)) * 100
+                        st.write(f"- **{pred}**: {count} ({percentage:.1f}%)")
+        
+        except Exception as e:
+            st.error(f"Error reading GeoJSON file: {str(e)}")
+    
+    # Display results if available
+    if 'batch_predictions' in st.session_state and st.session_state.batch_predictions is not None:
+        st.markdown("---")
+        st.subheader("📊 Batch Processing Results")
+        
+        result_gdf = st.session_state.batch_predictions
+        
+        # Show results table
+        st.write("**📋 Results Table:**")
+        display_cols = ['prediction', 'confidence']
+        prob_cols = [col for col in result_gdf.columns if col.startswith('prob_')]
+        display_cols.extend(prob_cols[:5])  # Show first 5 probability columns
+        st.dataframe(result_gdf[display_cols], use_container_width=True)
+        
+        # Create and display results map
+        st.write("**🗺️ Results Map:**")
+        results_map = create_results_map(result_gdf)
+        if results_map:
+            st_folium(results_map, width=None, height=600, key="results_map")
+        
+        # Download button
+        st.write("**💾 Download Results:**")
+        
+        # Prepare download data
+        download_gdf = result_gdf.copy()
+        
+        # Ensure all data is serializable
+        for col in download_gdf.columns:
+            if col != 'geometry':
+                if download_gdf[col].dtype == 'object':
+                    download_gdf[col] = download_gdf[col].astype(str)
+                elif 'float' in str(download_gdf[col].dtype):
+                    download_gdf[col] = download_gdf[col].round(6)
+        
+        # Convert to GeoJSON
+        geojson_data = download_gdf.to_json()
+        current_model = st.session_state.current_model
+        
+        st.download_button(
+            label="🗺️ Download Results as GeoJSON",
+            data=geojson_data,
+            file_name=f"batch_predictions_{current_model}.geojson",
+            mime="application/json",
+            help=f"Download batch processing results as GeoJSON"
+        )
 def create_map(center_lat=-7.25, center_lon=112.75, zoom_start=12):
     """Create interactive map with drawing tools"""
     m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom_start)
@@ -467,7 +831,7 @@ def process_drawn_features(map_data):
 # ========================
 def main():
     st.title("🗺️ Automated Grid-based Geo Annotator")
-    st.markdown("Draw polygons on the map to classify satellite imagery using deep learning")
+    st.markdown("Choose between interactive polygon drawing or batch GeoJSON processing")
 
     # Sidebar
     with st.sidebar:
@@ -501,20 +865,25 @@ def main():
                     st.markdown(f"**{i+1}**: {cls}")
         
         st.markdown("---")
-        st.markdown("### 📋 Instructions")
+        st.markdown("### 📋 Usage Options")
         st.markdown("""
-        1. **Select model** above (AGGA-v2 or AGGA-v4)
-        2. **Draw polygons** on the map using drawing tools
-        3. **Click 'Predict'** to classify drawn areas
-        4. **View results** in the results section
+        **🎯 Interactive Drawing:**
+        - Draw polygons on the map
+        - Real-time classification
+        - View captured images
+        
+        **📁 Batch Processing:**
+        - Upload GeoJSON file
+        - Classify all polygons
+        - Download results with map visualization
         """)
         st.markdown("---")
         st.markdown("### ⚙️ Settings")
         st.markdown("**Image Capture Settings:**")
         st.markdown("- Zoom Level: 17 (fixed)")
-        st.markdown("- Scale: 2x (fixed)")
+        st.markdown("- Scale: 2x (fixed)")  
         st.markdown("- Image Size: 640×640 (fixed)")
-        st.markdown("*Settings are fixed to match training data*")
+        st.markdown("*Settings match training data*")
 
     # Load model (check if model changed or not loaded yet)
     if ('model_loaded' not in st.session_state or 
@@ -538,57 +907,18 @@ def main():
                 del st.session_state.predictions
             if 'captured_images' in st.session_state:
                 del st.session_state.captured_images
+            if 'batch_predictions' in st.session_state:
+                del st.session_state.batch_predictions
 
-    # Main content
-    st.subheader("🗺️ Interactive Map")
+    # Create tabs
+    tab1, tab2 = st.tabs(["🎯 Interactive Drawing", "📁 Batch Processing"])
     
-    # Fixed settings (same as training data)
-    center_lat, center_lon, zoom_start = -7.25, 112.75, 12
-    img_zoom, img_scale = 17, 2  # Fixed to match training
+    with tab1:
+        draw_polygons_tab()
     
-    # Create and display map
-    m = create_map(center_lat, center_lon, zoom_start)
-    map_data = st_folium(
-        m, 
-        width=None,  # Use full width
-        height=600,  # Increased height
-        returned_objects=["all_drawings"],
-        key="map_widget"  # Add key to prevent reloading issues
-    )
-    
-    # Process drawn polygons
-    if map_data['all_drawings']:
-        gdf = process_drawn_features(map_data)
-        
-        if gdf is not None and len(gdf) > 0:
-            st.success(f"✅ {len(gdf)} polygon(s) drawn")
-            
-            # Show polygon info
-            with st.expander("📊 Polygon Details"):
-                for idx, row in gdf.iterrows():
-                    st.write(f"**Polygon {idx+1}:**")
-                    st.write(f"- Area: {row.geometry.area:.8f}°²")
-                    st.write(f"- Perimeter: {row.geometry.length:.8f}°")
-                    bounds = row.geometry.bounds
-                    st.write(f"- Bounds: ({bounds[0]:.4f}, {bounds[1]:.4f}) to ({bounds[2]:.4f}, {bounds[3]:.4f})")
-            
-            # Prediction button
-            current_model_name = MODEL_CONFIGS[selected_model]["display_name"]
-            if st.button(f"🤖 Predict Classifications using {current_model_name}", type="primary", use_container_width=True):
-                predict_polygons(gdf, img_zoom, img_scale)
-        else:
-            st.info("👆 Draw some polygons on the map to get started")
-    else:
-        st.info("👆 Draw some polygons on the map to get started")
+    with tab2:
+        upload_geojson_tab()
 
-    # Results section - moved below map
-    st.markdown("---")  # Add separator
-    st.subheader("📊 Results")
-    
-    if 'predictions' in st.session_state and st.session_state.predictions is not None and len(st.session_state.predictions) > 0:
-        display_prediction_results()
-    else:
-        st.info("Draw polygons and click 'Predict' to see results here")
 
 def predict_polygons(gdf, zoom, scale):
     """Predict classifications for drawn polygons using ONNX"""
