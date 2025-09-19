@@ -725,65 +725,23 @@ def voting_prediction_tab():
     # Point selection section
     st.markdown("### 📍 Set Center Point")
     
-    col1, col2 = st.columns(2)
+    coord_input = st.text_input(
+        "Enter Coordinates (lat lon):",
+        placeholder="-7.25 112.75",
+        help="Enter coordinates in format: latitude longitude (e.g., -7.25 112.75)"
+    )
     
-    with col1:
-        st.markdown("**Option 1: Enter Coordinates**")
-        coord_input = st.text_input(
-            "Coordinates (lat lon):",
-            placeholder="-7.25 112.75",
-            help="Enter coordinates in format: latitude longitude (e.g., -7.25 112.75)"
-        )
-        
-        if coord_input.strip():
-            lat, lon, error = parse_coordinates(coord_input)
-            if error:
-                st.error(error)
-                center_point = None
-            else:
-                st.success(f"📍 Coordinates set: {lat:.6f}, {lon:.6f}")
-                center_point = (lat, lon)
-        else:
+    if coord_input.strip():
+        lat, lon, error = parse_coordinates(coord_input)
+        if error:
+            st.error(error)
             center_point = None
-    
-    with col2:
-        st.markdown("**Option 2: Search Location**")
-        if geocode_service:
-            search_query = st.text_input(
-                "Search location:",
-                placeholder="Jakarta, Times Square, etc.",
-                help="Search for any location worldwide"
-            )
-            
-            if st.button("🔍 Search & Set Point"):
-                if search_query.strip():
-                    with st.spinner(f"Searching for '{search_query}'..."):
-                        lat, lon, formatted_address = geocode_service.geocode_address(search_query)
-                        
-                        if lat and lon:
-                            st.success(f"📍 Found: {formatted_address}")
-                            center_point = (lat, lon)
-                            # Store in session state
-                            st.session_state.voting_center = center_point
-                        else:
-                            st.error(f"❌ Could not find: '{search_query}'")
-                            center_point = st.session_state.get('voting_center', None)
-                else:
-                    st.error("Please enter a search query")
-                    center_point = st.session_state.get('voting_center', None)
-            else:
-                center_point = st.session_state.get('voting_center', None)
         else:
-            st.info("🔍 Search unavailable - Google Maps API not configured")
-            center_point = None
-    
-    # Use coordinates from input if available, otherwise use search result
-    if 'center_point' in locals() and center_point:
-        st.session_state.voting_center = center_point
-    elif 'voting_center' in st.session_state:
-        center_point = st.session_state.voting_center
+            st.success(f"📍 Coordinates set: {lat:.6f}, {lon:.6f}")
+            center_point = (lat, lon)
+            st.session_state.voting_center = center_point
     else:
-        center_point = None
+        center_point = st.session_state.get('voting_center', None)
     
     # Grid configuration
     st.markdown("### ⚙️ Grid Configuration")
