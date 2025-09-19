@@ -692,24 +692,31 @@ def create_voting_results_map(center_lat, center_lon, distance_meters, grid_poin
             icon=folium.Icon(color=icon_color, icon=icon_name)
         ).add_to(m)
     
-    # Add grid lines to show structure
-    # Horizontal lines
-    for i in range(-1, 2):
-        lat = center_lat + (i * meters_to_degrees(distance_meters, center_lat)[1])
-        line_points = []
-        for j in range(-1, 2):
-            lon = center_lon + (j * meters_to_degrees(distance_meters, center_lat)[0])
-            line_points.append([lat, lon])
-        folium.PolyLine(line_points, color='yellow', weight=2, opacity=0.5).add_to(m)
+    # Add proper 3x3 grid lines
+    lat_spacing = meters_to_degrees(distance_meters, center_lat)[1]
+    lon_spacing = meters_to_degrees(distance_meters, center_lat)[0]
     
-    # Vertical lines  
-    for j in range(-1, 2):
-        lon = center_lon + (j * meters_to_degrees(distance_meters, center_lat)[0])
-        line_points = []
-        for i in range(-1, 2):
-            lat = center_lat + (i * meters_to_degrees(distance_meters, center_lat)[1])
-            line_points.append([lat, lon])
-        folium.PolyLine(line_points, color='yellow', weight=2, opacity=0.5).add_to(m)
+    # Create grid boundary points
+    top_lat = center_lat + lat_spacing
+    bottom_lat = center_lat - lat_spacing
+    left_lon = center_lon - lon_spacing
+    right_lon = center_lon + lon_spacing
+    
+    # Draw horizontal grid lines (3 lines total)
+    for i in range(-1, 2):  # Top, center, bottom
+        lat = center_lat + (i * lat_spacing)
+        folium.PolyLine(
+            [[lat, left_lon], [lat, right_lon]], 
+            color='yellow', weight=2, opacity=0.7
+        ).add_to(m)
+    
+    # Draw vertical grid lines (3 lines total)
+    for j in range(-1, 2):  # Left, center, right
+        lon = center_lon + (j * lon_spacing)
+        folium.PolyLine(
+            [[top_lat, lon], [bottom_lat, lon]], 
+            color='yellow', weight=2, opacity=0.7
+        ).add_to(m)
     
     folium.LayerControl().add_to(m)
     return m
