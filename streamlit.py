@@ -442,8 +442,510 @@ def initialize_geocode_service():
         return None
 
 # ========================
-# GeoJSON Processing Functions
+# Voting Prediction Functions
 # ========================
+def meters_to_degrees(meters, latitude):
+    """Convert meters to degrees at a given latitude"""
+    import math
+    # Earth's radius in meters
+    earth_radius = 6378137.0
+    
+    # Convert latitude to radians
+    lat_rad = math.radians(latitude)
+    
+    # Degrees per meter for longitude (varies with latitude)
+    degrees_per_meter_lon = 1 / (earth_radius * math.cos(lat_rad) * math.pi / 180)
+    
+    # Degrees per meter for latitude (constant)
+    degrees_per_meter_lat = 1 / (earth_radius * math.pi / 180)
+    
+    return meters * degrees_per_meter_lon, meters * degrees_per_meter_lat
+
+def create_grid_points(center_lat, center_lon, distance_meters):
+    """Create 3x3 grid of points around center with specified spacing"""
+    # Convert distance to degrees
+    lon_degrees, lat_degrees = meters_to_degrees(distance_meters, center_lat)
+    
+    # Create 3x3 grid (9 points)
+    grid_points = []
+    grid_positions = []
+    
+    # Grid positions: from -1 to +1 in both directions
+    for i in range(-1, 2):  # -1, 0, 1 (rows: top, center, bottom)
+        for j in range(-1, 2):  # -1, 0, 1 (cols: left, center, right)
+            lat = center_lat + (i * lat_degrees)
+            lon = center_lon + (j * lon_degrees)
+            grid_points.append((lat, lon))
+            
+            # Position labels for display
+            row_label = ["Top", "Center", "Bottom"][i + 1]
+            col_label = ["Left", "Center", "Right"][j + 1]
+            grid_positions.append(f"{row_label}-{col_label}")
+    
+    return grid_points, grid_positions
+
+def point_to_bbox(lat, lon, buffer_meters):
+    """Convert a point to a bounding box with specified buffer in meters"""
+    from shapely.geometry import box
+    
+    # Convert buffer meters to degrees
+    lon_degrees, lat_degrees = meters_to_degrees(buffer_meters, lat)
+    
+    # Create bounding box
+    minx = lon - lon_degrees
+    maxx = lon + lon_degrees
+    miny = lat - lat_degrees
+    maxy = lat + lat_degrees
+    
+    return box(minx, miny, maxx, maxy)
+
+def parse_coordinates(coord_string):
+    """Parse coordinate string in various formats"""
+    try:
+        # Remove extra whitespace and common separators
+        coord_string = coord_string.strip().replace(',', ' ').replace(';', ' ')
+        
+        # Split by spaces and filter empty strings
+        parts = [p.strip() for p in coord_string.split() if p.strip()]
+        
+        if len(parts) >= 2:
+            lat = float(parts[0])
+            lon = float(parts[1])
+            
+            # Basic validation
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                return lat, lon, None
+            else:
+                return None, None, "Coordinates out of valid range (lat: -90 to 90, lon: -180 to 180)"
+        else:
+            return None, None, "Please provide both latitude and longitude"
+            
+    except ValueError:
+        return None, None, "Invalid coordinate format. Use format like: -7.25 112.75"
+
+def predict_voting_grid(center_lat, center_lon, distance_meters, model_components, zoom=17, scale=2):
+    """Predict using voting system on 3x3 grid"""
+    
+    # Get model components
+    ort_session, transform, idx_to_class, current_model = model_components
+    
+    # Create grid points
+    grid_points, grid_positions = create_grid_points(center_lat, center_lon, distance_meters)
+    
+    # Calculate bounding box size (half of distance for radius)
+    bbox_buffer = distance_meters / 2
+    
+    st.info(f"Creating 3x3 grid with {distance_meters}m spacing, {distance_meters}x{distance_meters}m bounding boxes")
+    
+    predictions = []
+    confidences = []
+    all_probs = []
+    successful_points = []
+    
+    # Create progress tracking
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for idx, ((lat, lon), position) in enumerate(zip(grid_points, grid_positions)):
+        progress = (idx + 1) / len(grid_points)
+        progress_bar.progress(progress)
+        status_text.text(f"Processing {position} point ({idx+1}/9)")
+        
+        try:
+            # Create bounding box around point
+            bbox_poly = point_to_bbox(lat, lon, bbox_buffer)
+            
+            # Generate image from bounding box
+            img = polygon_to_image(bbox_poly, zoom, scale)
+            
+            if img is not None:
+                # Make prediction
+                pred_class, confidence, probs = predict_single_image(
+                    ort_session, img, transform, idx_to_class, current_model
+                )
+                
+                predictions.append(pred_class)
+                confidences.append(confidence)
+                all_probs.append(probs)
+                successful_points.append(position)
+                
+                st.success(f"{position}: {pred_class} ({confidence:.1%})")
+                
+            else:
+                st.error(f"Failed to capture image for {position}")
+                predictions.append("unknown")
+                confidences.append(0.0)
+                all_probs.append(np.zeros(len(idx_to_class)))
+                
+        except Exception as e:
+            st.error(f"Error processing {position}: {str(e)}")
+            predictions.append("unknown")
+            confidences.append(0.0)
+            all_probs.append(np.zeros(len(idx_to_class)))
+    
+    progress_bar.progress(1.0)
+    status_text.text("✅ Grid processing complete!")
+    
+    return predictions, confidences, all_probs, grid_positions, grid_points
+
+def calculate_voting_result(predictions, confidences, grid_positions):
+    """Calculate voting result from grid predictions"""
+    from collections import Counter
+    
+    # Filter out unknown predictions for voting
+    valid_predictions = [p for p in predictions if p != "unknown"]
+    
+    if not valid_predictions:
+        return "unknown", 0.0, {}, True, "All predictions failed"
+    
+    # Count votes
+    vote_counts = Counter(valid_predictions)
+    total_votes = len(valid_predictions)
+    
+    # Find winner(s)
+    max_votes = max(vote_counts.values())
+    winners = [pred for pred, count in vote_counts.items() if count == max_votes]
+    
+    # Check for tie
+    is_tie = len(winners) > 1
+    
+    if is_tie:
+        # In case of tie, pick the one with highest average confidence
+        tie_confidences = {}
+        for winner in winners:
+            winner_indices = [i for i, p in enumerate(predictions) if p == winner]
+            avg_confidence = np.mean([confidences[i] for i in winner_indices])
+            tie_confidences[winner] = avg_confidence
+        
+        final_winner = max(tie_confidences.keys(), key=lambda x: tie_confidences[x])
+        final_confidence = tie_confidences[final_winner]
+        tie_message = f"Tie detected! {', '.join(winners)} each got {max_votes} votes. Winner selected by highest confidence."
+    else:
+        final_winner = winners[0]
+        winner_indices = [i for i, p in enumerate(predictions) if p == final_winner]
+        final_confidence = np.mean([confidences[i] for i in winner_indices])
+        tie_message = None
+    
+    # Create vote breakdown
+    vote_breakdown = {}
+    for pred, count in vote_counts.items():
+        percentage = (count / total_votes) * 100
+        vote_breakdown[pred] = {"votes": count, "percentage": percentage}
+    
+    return final_winner, final_confidence, vote_breakdown, is_tie, tie_message
+
+def create_voting_results_map(center_lat, center_lon, distance_meters, grid_points, grid_positions, predictions, final_prediction):
+    """Create map showing voting grid results"""
+    
+    # Create map centered on the selected point
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
+    
+    # Add satellite layer
+    folium.TileLayer(
+        tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        attr='Google Satellite',
+        name='Google Satellite',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    
+    # Color mapping for predictions
+    colors = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'darkblue', 
+              'darkgreen', 'cadetblue', 'darkpurple', 'pink', 'lightblue', 
+              'lightgreen', 'gray', 'black', 'brown', 'cyan', 'magenta']
+    
+    unique_predictions = list(set(predictions))
+    color_map = {pred: colors[i % len(colors)] for i, pred in enumerate(unique_predictions)}
+    
+    # Add center point marker (user's selected point)
+    folium.Marker(
+        [center_lat, center_lon],
+        popup=f"<b>🎯 Center Point</b><br>Grid: {distance_meters}m spacing<br>Final: {final_prediction}",
+        tooltip=f"🎯 Center Point",
+        icon=folium.Icon(color='red', icon='bullseye')
+    ).add_to(m)
+    
+    # Add grid point markers
+    for (lat, lon), position, prediction in zip(grid_points, grid_positions, predictions):
+        color = color_map.get(prediction, 'gray')
+        
+        popup_text = f"""
+        <div style="font-family: Arial, sans-serif;">
+            <b>{position}</b><br>
+            <b>Prediction:</b> {prediction}<br>
+            <b>Coordinates:</b> {lat:.6f}, {lon:.6f}
+        </div>
+        """
+        
+        # Use different icon for center vs grid points
+        if position == "Center-Center":
+            icon_name = 'star'
+            icon_color = 'red'
+        else:
+            icon_name = 'circle'
+            icon_color = 'blue' if prediction != 'unknown' else 'gray'
+        
+        folium.Marker(
+            [lat, lon],
+            popup=folium.Popup(popup_text, max_width=300),
+            tooltip=f"{position}: {prediction}",
+            icon=folium.Icon(color=icon_color, icon=icon_name)
+        ).add_to(m)
+    
+    # Add grid lines to show structure
+    # Horizontal lines
+    for i in range(-1, 2):
+        lat = center_lat + (i * meters_to_degrees(distance_meters, center_lat)[1])
+        line_points = []
+        for j in range(-1, 2):
+            lon = center_lon + (j * meters_to_degrees(distance_meters, center_lat)[0])
+            line_points.append([lat, lon])
+        folium.PolyLine(line_points, color='yellow', weight=2, opacity=0.5).add_to(m)
+    
+    # Vertical lines  
+    for j in range(-1, 2):
+        lon = center_lon + (j * meters_to_degrees(distance_meters, center_lat)[0])
+        line_points = []
+        for i in range(-1, 2):
+            lat = center_lat + (i * meters_to_degrees(distance_meters, center_lat)[1])
+            line_points.append([lat, lon])
+        folium.PolyLine(line_points, color='yellow', weight=2, opacity=0.5).add_to(m)
+    
+    folium.LayerControl().add_to(m)
+    return m
+
+def voting_prediction_tab():
+    """Tab for voting prediction with grid sampling"""
+    st.subheader("🗳️ Voting Prediction")
+    st.markdown("Set a point and create a 3x3 prediction grid with majority voting")
+    
+    # Initialize geocoding service
+    geocode_service = initialize_geocode_service()
+    
+    # Point selection section
+    st.markdown("### 📍 Set Center Point")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Option 1: Enter Coordinates**")
+        coord_input = st.text_input(
+            "Coordinates (lat lon):",
+            placeholder="-7.25 112.75",
+            help="Enter coordinates in format: latitude longitude (e.g., -7.25 112.75)"
+        )
+        
+        if coord_input.strip():
+            lat, lon, error = parse_coordinates(coord_input)
+            if error:
+                st.error(error)
+                center_point = None
+            else:
+                st.success(f"📍 Coordinates set: {lat:.6f}, {lon:.6f}")
+                center_point = (lat, lon)
+        else:
+            center_point = None
+    
+    with col2:
+        st.markdown("**Option 2: Search Location**")
+        if geocode_service:
+            search_query = st.text_input(
+                "Search location:",
+                placeholder="Jakarta, Times Square, etc.",
+                help="Search for any location worldwide"
+            )
+            
+            if st.button("🔍 Search & Set Point"):
+                if search_query.strip():
+                    with st.spinner(f"Searching for '{search_query}'..."):
+                        lat, lon, formatted_address = geocode_service.geocode_address(search_query)
+                        
+                        if lat and lon:
+                            st.success(f"📍 Found: {formatted_address}")
+                            center_point = (lat, lon)
+                            # Store in session state
+                            st.session_state.voting_center = center_point
+                        else:
+                            st.error(f"❌ Could not find: '{search_query}'")
+                            center_point = st.session_state.get('voting_center', None)
+                else:
+                    st.error("Please enter a search query")
+                    center_point = st.session_state.get('voting_center', None)
+            else:
+                center_point = st.session_state.get('voting_center', None)
+        else:
+            st.info("🔍 Search unavailable - Google Maps API not configured")
+            center_point = None
+    
+    # Use coordinates from input if available, otherwise use search result
+    if 'center_point' in locals() and center_point:
+        st.session_state.voting_center = center_point
+    elif 'voting_center' in st.session_state:
+        center_point = st.session_state.voting_center
+    else:
+        center_point = None
+    
+    # Grid configuration
+    st.markdown("### ⚙️ Grid Configuration")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        distance_options = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+        selected_distance = st.selectbox(
+            "Grid spacing & box size (meters):",
+            distance_options,
+            index=1,  # Default to 100m
+            help="Distance between grid points AND size of bounding boxes"
+        )
+    
+    with col2:
+        st.markdown("**Grid Preview:**")
+        st.markdown(f"- **Grid**: 3×3 = 9 prediction points")
+        st.markdown(f"- **Spacing**: {selected_distance}m between points")
+        st.markdown(f"- **Boxes**: {selected_distance}×{selected_distance}m per point")
+        st.markdown(f"- **Total area**: ~{selected_distance*2}×{selected_distance*2}m")
+    
+    # Show current center point
+    if center_point:
+        lat, lon = center_point
+        st.info(f"📍 Center point set: {lat:.6f}, {lon:.6f}")
+        
+        # Prediction button
+        current_model_name = MODEL_CONFIGS[st.session_state.current_model]["display_name"]
+        if st.button(f"🗳️ Run Voting Prediction using {current_model_name}", type="primary", use_container_width=True):
+            
+            # Get model components
+            model_components = (
+                st.session_state.ort_session,
+                st.session_state.transform,
+                st.session_state.idx_to_class,
+                st.session_state.current_model
+            )
+            
+            # Run voting prediction
+            predictions, confidences, all_probs, grid_positions, grid_points = predict_voting_grid(
+                lat, lon, selected_distance, model_components
+            )
+            
+            # Calculate voting result
+            final_prediction, final_confidence, vote_breakdown, is_tie, tie_message = calculate_voting_result(
+                predictions, confidences, grid_positions
+            )
+            
+            # Store results
+            st.session_state.voting_results = {
+                'center_point': center_point,
+                'distance': selected_distance,
+                'predictions': predictions,
+                'confidences': confidences,
+                'grid_positions': grid_positions,
+                'grid_points': grid_points,
+                'final_prediction': final_prediction,
+                'final_confidence': final_confidence,
+                'vote_breakdown': vote_breakdown,
+                'is_tie': is_tie,
+                'tie_message': tie_message,
+                'model_used': st.session_state.current_model
+            }
+    else:
+        st.warning("📍 Please set a center point using coordinates or search")
+    
+    # Display results
+    if 'voting_results' in st.session_state:
+        st.markdown("---")
+        st.subheader("🗳️ Voting Results")
+        
+        results = st.session_state.voting_results
+        
+        # Final result summary
+        st.markdown("### 🏆 Final Prediction")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Winner", results['final_prediction'])
+        with col2:
+            st.metric("Confidence", f"{results['final_confidence']:.1%}")
+        with col3:
+            model_name = MODEL_CONFIGS[results['model_used']]["display_name"]
+            st.metric("Model", model_name)
+        
+        # Tie information
+        if results['is_tie']:
+            st.warning(f"⚠️ {results['tie_message']}")
+        
+        # Vote breakdown
+        st.markdown("### 📊 Vote Breakdown")
+        vote_df = []
+        for pred, data in results['vote_breakdown'].items():
+            vote_df.append({
+                'Prediction': pred,
+                'Votes': data['votes'],
+                'Percentage': f"{data['percentage']:.1f}%"
+            })
+        
+        if vote_df:
+            st.dataframe(pd.DataFrame(vote_df), use_container_width=True)
+        
+        # Individual predictions
+        st.markdown("### 📋 Individual Grid Predictions")
+        grid_df = []
+        for pos, pred, conf in zip(results['grid_positions'], results['predictions'], results['confidences']):
+            grid_df.append({
+                'Position': pos,
+                'Prediction': pred,
+                'Confidence': f"{conf:.1%}"
+            })
+        
+        st.dataframe(pd.DataFrame(grid_df), use_container_width=True)
+        
+        # Results map
+        st.markdown("### 🗺️ Grid Visualization")
+        results_map = create_voting_results_map(
+            results['center_point'][0], results['center_point'][1],
+            results['distance'], results['grid_points'], results['grid_positions'],
+            results['predictions'], results['final_prediction']
+        )
+        st_folium(results_map, width=None, height=600, key="voting_results_map")
+        
+        # Download results
+        st.markdown("### 💾 Download Results")
+        
+        # Create summary data
+        summary_data = {
+            'center_coordinates': results['center_point'],
+            'grid_spacing_meters': results['distance'],
+            'final_prediction': results['final_prediction'],
+            'final_confidence': results['final_confidence'],
+            'is_tie': results['is_tie'],
+            'tie_message': results['tie_message'],
+            'model_used': results['model_used'],
+            'vote_breakdown': results['vote_breakdown'],
+            'grid_predictions': [
+                {
+                    'position': pos,
+                    'coordinates': point,
+                    'prediction': pred,
+                    'confidence': conf
+                }
+                for pos, point, pred, conf in zip(
+                    results['grid_positions'], 
+                    results['grid_points'], 
+                    results['predictions'], 
+                    results['confidences']
+                )
+            ]
+        }
+        
+        # Convert to JSON for download
+        import json
+        json_data = json.dumps(summary_data, indent=2)
+        
+        st.download_button(
+            label="📄 Download Voting Results (JSON)",
+            data=json_data,
+            file_name=f"voting_prediction_{results['model_used']}.json",
+            mime="application/json",
+            help="Download detailed voting prediction results"
+        )
 def create_results_map(gdf_with_predictions):
     """Create a map showing predictions grouped by class"""
     if gdf_with_predictions.empty:
@@ -782,30 +1284,30 @@ def upload_geojson_tab():
             
             st.success(f"✅ Loaded GeoJSON with {len(gdf_preview)} features")
             
-            # # Show file info
-            # col1, col2, col3 = st.columns(3)
-            # with col1:
-            #     st.metric("Total Features", len(gdf_preview))
-            # with col2:
-            #     st.metric("CRS", str(gdf_preview.crs))
-            # with col3:
-            #     bounds = gdf_preview.total_bounds
-            #     st.metric("Bounds", f"{bounds[0]:.3f}, {bounds[1]:.3f}")
+            # Show file info
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Features", len(gdf_preview))
+            with col2:
+                st.metric("CRS", str(gdf_preview.crs))
+            with col3:
+                bounds = gdf_preview.total_bounds
+                st.metric("Bounds", f"{bounds[0]:.3f}, {bounds[1]:.3f}")
             
-            # # Show column info
-            # st.write("**📋 Available Columns:**")
-            # cols_info = []
-            # for col in gdf_preview.columns:
-            #     if col != 'geometry':
-            #         dtype = str(gdf_preview[col].dtype)
-            #         unique_count = gdf_preview[col].nunique()
-            #         cols_info.append(f"- **{col}** ({dtype}) - {unique_count} unique values")
+            # Show column info
+            st.write("**📋 Available Columns:**")
+            cols_info = []
+            for col in gdf_preview.columns:
+                if col != 'geometry':
+                    dtype = str(gdf_preview[col].dtype)
+                    unique_count = gdf_preview[col].nunique()
+                    cols_info.append(f"- **{col}** ({dtype}) - {unique_count} unique values")
             
-            # for info in cols_info[:5]:  # Show first 5 columns
-            #     st.write(info)
+            for info in cols_info[:5]:  # Show first 5 columns
+                st.write(info)
             
-            # if len(cols_info) > 5:
-            #     st.write(f"... and {len(cols_info) - 5} more columns")
+            if len(cols_info) > 5:
+                st.write(f"... and {len(cols_info) - 5} more columns")
             
             # Process button
             current_model_name = MODEL_CONFIGS[st.session_state.current_model]["display_name"]
@@ -1075,13 +1577,16 @@ def main():
                 del st.session_state.batch_predictions
 
     # Create tabs
-    tab1, tab2 = st.tabs(["🎯 Interactive Drawing", "📁 Batch Processing"])
+    tab1, tab2, tab3 = st.tabs(["🎯 Interactive Drawing", "📁 Batch Processing", "🗳️ Voting Prediction"])
     
     with tab1:
         draw_polygons_tab()
     
     with tab2:
         upload_geojson_tab()
+        
+    with tab3:
+        voting_prediction_tab()
 
 
 def predict_polygons(gdf, zoom, scale):
