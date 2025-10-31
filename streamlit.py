@@ -81,11 +81,11 @@ def check_password():
         st.text_input("Username", key="username", on_change=password_entered)
         st.text_input("Password", type="password", key="password", on_change=password_entered)
         
-        if "password_correct" in st.session_state and st.session_state["password_correct"] == False:
-            # st.error("😕 Username or password incorrect")
+        # if "password_correct" in st.session_state and st.session_state["password_correct"] == False:
+        #     st.error("😕 Username or password incorrect")
         
-        st.markdown("---")
-        st.info("💡 Please contact administrator if you need access")
+        # st.markdown("---")
+        # st.info("💡 Please contact administrator if you need access")
 
     return False
 
