@@ -39,22 +39,75 @@ st.set_page_config(
 )
 
 # ========================
+# Authentication Functions
+# ========================
+def check_password():
+    """Returns `True` if the user had the correct password."""
+
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        try:
+            username = st.session_state["username"]
+            password = st.session_state["password"]
+            
+            # Check against both users
+            user1_valid = (username == st.secrets["auth"]["user1_username"] and 
+                          password == st.secrets["auth"]["user1_password"])
+            user2_valid = (username == st.secrets["auth"]["user2_username"] and 
+                          password == st.secrets["auth"]["user2_password"])
+            
+            if user1_valid or user2_valid:
+                st.session_state["password_correct"] = True
+                st.session_state["logged_in_user"] = username
+                del st.session_state["password"]  # Don't store password
+                del st.session_state["username"]  # Don't store username in session
+            else:
+                st.session_state["password_correct"] = False
+        except KeyError:
+            st.error("Authentication configuration not found in secrets")
+            st.session_state["password_correct"] = False
+
+    # Return True if the password is validated
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Show login form
+    st.markdown("# 🔐 Login")
+    st.markdown("Please enter your credentials to access the application")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.text_input("Username", key="username", on_change=password_entered)
+        st.text_input("Password", type="password", key="password", on_change=password_entered)
+        
+        if st.session_state.get("password_correct", False) == False and "username" in st.session_state:
+            st.error("😕 Username or password incorrect")
+        
+        st.markdown("---")
+        st.info("💡 Please contact administrator if you need access")
+
+    return False
+
+def logout():
+    """Logout function to clear session state"""
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.rerun()
+
+# ========================
 # Model Configurations
 # ========================
 MODEL_CONFIGS = {
     "agga-v2": {
-        "repo_id": "woov/resnet50_landuse_5_classification",
-        "model_filename": "agga-v2.onnx",
-        "info_filename": "agga-v2_info.json",
+        # repo_id, model_filename, info_filename will be loaded from secrets
         "display_name": "AGGA-v2 (5 Classes)",
         "description": "5 Classification: slum+slum-to-normal, normal+normal-premium, premium, industri, komersial",
         "num_classes": 5,
         "default_classes": ['slum+slum-to-normal', 'normal+normal-premium', 'premium', 'industri', 'komersial']
     },
     "agga-v4": {
-        "repo_id": "woov/resnet50_landuse_5_classification",
-        "model_filename": "agga-v4.onnx",
-        "info_filename": "agga-v4_info.json",
+        # repo_id, model_filename, info_filename will be loaded from secrets
         "display_name": "AGGA-v4 (6 Classes)",
         "description": "6 Classification with detailed explanations",
         "num_classes": 6,
@@ -104,11 +157,15 @@ def download_and_load_model(model_key):
     try:
         from huggingface_hub import hf_hub_download
         
-        # Get model configuration
-        model_config = MODEL_CONFIGS[model_key]
-        repo_id = model_config["repo_id"]
-        model_filename = model_config["model_filename"]
-        info_filename = model_config["info_filename"]
+        # Get model configuration from secrets
+        try:
+            model_config = MODEL_CONFIGS[model_key]
+            repo_id = st.secrets["models"][model_key]["repo_id"]
+            model_filename = st.secrets["models"][model_key]["model_filename"]
+            info_filename = st.secrets["models"][model_key]["info_filename"]
+        except KeyError:
+            st.error(f"Model configuration for {model_key} not found in secrets")
+            st.stop()
         
         # Create info container
         info_container = st.container()
@@ -120,7 +177,7 @@ def download_and_load_model(model_key):
                 
                 # Step 1: Download model
                 status_text.info(f"📥 Downloading {model_config['display_name']} from Hugging Face Hub...")
-                details_text.text(f"Repository: {repo_id}")
+                details_text.text(f"Loading model configuration...")
                 progress_bar.progress(10)
                 
                 model_path = hf_hub_download(
@@ -209,7 +266,6 @@ def download_and_load_model(model_key):
                 - 🏗️ Architecture: {config['architecture']}
                 - 📊 Classes: {len(class_to_idx)}
                 - 🖼️ Input size: {config['image_size']}×{config['image_size']}
-                - 💾 Cached at: `{model_path}`
                 """)
                 
                 # Show class details for both models
@@ -1454,11 +1510,21 @@ def process_drawn_features(map_data):
 # Main Application
 # ========================
 def main():
+    # Check authentication first
+    if not check_password():
+        st.stop()
+    
     st.title("🗺️ Automated Grid-based Geo Annotator")
     st.markdown("Choose between interactive polygon drawing or batch GeoJSON processing")
 
     # Sidebar
     with st.sidebar:
+        # Add logout button at the top
+        st.markdown(f"### 👤 User: {st.session_state.get('logged_in_user', 'Unknown')}")
+        if st.button("🚪 Logout", use_container_width=True):
+            logout()
+        st.markdown("---")
+        
         st.header("🗺️ AGGA Models")
         
         # Model Selection
