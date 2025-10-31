@@ -43,12 +43,15 @@ st.set_page_config(
 # ========================
 def check_password():
     """Returns `True` if the user had the correct password."""
-
+    
     def password_entered():
         """Checks whether a password entered by the user is correct."""
         try:
             username = st.session_state["username"]
             password = st.session_state["password"]
+            
+            # Mark that user has attempted login
+            st.session_state["login_attempted"] = True
             
             # Check against both users
             user1_valid = (username == st.secrets["auth"]["user1_username"] and 
@@ -81,7 +84,8 @@ def check_password():
         st.text_input("Username", key="username", on_change=password_entered)
         st.text_input("Password", type="password", key="password", on_change=password_entered)
         
-        if st.session_state.get("password_correct", False) == False and "username" in st.session_state:
+        # Only show error if user has attempted login and it failed
+        if st.session_state.get("login_attempted", False) and not st.session_state.get("password_correct", False):
             st.error("😕 Username or password incorrect")
         
         st.markdown("---")
