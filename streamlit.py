@@ -50,9 +50,6 @@ def check_password():
             username = st.session_state["username"]
             password = st.session_state["password"]
             
-            # Mark that user has attempted login
-            st.session_state["login_attempted"] = True
-            
             # Check against both users
             user1_valid = (username == st.secrets["auth"]["user1_username"] and 
                           password == st.secrets["auth"]["user1_password"])
@@ -84,8 +81,7 @@ def check_password():
         st.text_input("Username", key="username", on_change=password_entered)
         st.text_input("Password", type="password", key="password", on_change=password_entered)
         
-        # Only show error if user has attempted login and it failed
-        if st.session_state.get("login_attempted", False) and not st.session_state.get("password_correct", False):
+        if "password_correct" in st.session_state and st.session_state["password_correct"] == False:
             st.error("😕 Username or password incorrect")
         
         st.markdown("---")
