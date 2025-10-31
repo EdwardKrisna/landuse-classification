@@ -82,7 +82,7 @@ def check_password():
         st.text_input("Password", type="password", key="password", on_change=password_entered)
         
         if "password_correct" in st.session_state and st.session_state["password_correct"] == False:
-            st.error("😕 Username or password incorrect")
+            # st.error("😕 Username or password incorrect")
         
         st.markdown("---")
         st.info("💡 Please contact administrator if you need access")
